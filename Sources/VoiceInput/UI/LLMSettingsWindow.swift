@@ -7,8 +7,8 @@ import AppKit
 ///   written to UserDefaults, never logged, and never shown in the status label.
 /// - The "API Key" field is a fully clearable `NSSecureTextField`; saving it empty
 ///   deletes the stored credential.
-/// - Because the app runs as an `.accessory` agent (no Dock icon), `show()` must
-///   explicitly activate the app so the user is able to type into the fields.
+/// - The app is often in the background, so `show()` explicitly activates it and
+///   brings the window forward so the user can type into the fields.
 final class LLMSettingsWindowController: NSWindowController {
 
     static let shared = LLMSettingsWindowController()
@@ -40,8 +40,8 @@ final class LLMSettingsWindowController: NSWindowController {
         buildWindowIfNeeded()
         populateFields()
 
-        // The app is `.accessory`, so it is not active by default; without this the
-        // window would appear but reject keyboard focus and the user could not type.
+        // The app may be in the background; without activating, the window would
+        // appear but reject keyboard focus and the user could not type.
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }

@@ -16,9 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let coordinator = AppCoordinator()
     private let fnMonitor = FnKeyMonitor()
 
-    // References to the dynamic menu items so checkmarks can be refreshed
-    // in place when a toggle changes.
-    private var languageItems: [NSMenuItem] = []
+    // References to the dynamic menu items so they can be refreshed when the
+    // menu re-opens (the language submenu is rebuilt fresh; toggles re-checked).
+    private var languageMenuItem: NSMenuItem?
     private var onDeviceItem: NSMenuItem?
     private var llmEnableItem: NSMenuItem?
 
@@ -28,9 +28,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var accessibilityPollTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setupMainMenu()
         setupStatusItem()
         wireMonitor()
         requestPermissions()
+    }
+
+    /// A minimal main menu. The Edit menu is the important part: it gives the
+    /// Preferences and LLM-settings text fields working Cut/Copy/Paste/Select-All
+    /// keyboard shortcuts (e.g. ⌘V to paste an API key), which a `.regular` app
+    /// only gets from a populated Edit menu in the responder chain.
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Preferences…",
+                        action: #selector(openPreferences(_:)), keyEquivalent: ",")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide Voice Input",
+                        action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Quit Voice Input",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All",
+                         action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+
+        NSApp.mainMenu = mainMenu
     }
 
     // MARK: - Status item / menu
@@ -71,24 +107,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        // Language submenu.
+        // Language submenu (single mutually-exclusive control: Auto + fixed langs).
         let languageItem = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
-        let languageMenu = NSMenu()
-        languageMenu.autoenablesItems = false
-        languageItems.removeAll()
-        let currentLanguage = Settings.shared.recognitionLanguage
-        for language in Settings.supportedLanguages {
-            let menuItem = NSMenuItem(title: language.name,
-                                      action: #selector(selectLanguage(_:)),
-                                      keyEquivalent: "")
-            menuItem.target = self
-            menuItem.representedObject = language.code
-            menuItem.state = (language.code == currentLanguage) ? .on : .off
-            languageMenu.addItem(menuItem)
-            languageItems.append(menuItem)
-        }
-        languageItem.submenu = languageMenu
+        languageItem.submenu = makeLanguageMenu()
         menu.addItem(languageItem)
+        languageMenuItem = languageItem
 
         // On-device recognition toggle.
         let onDevice = NSMenuItem(title: "On-device Recognition",
@@ -121,6 +144,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         llmItem.submenu = llmMenu
         menu.addItem(llmItem)
 
+        // Preferences window (also reachable from the Dock icon).
+        let prefs = NSMenuItem(title: "Preferences…",
+                               action: #selector(openPreferences(_:)),
+                               keyEquivalent: ",")
+        prefs.target = self
+        menu.addItem(prefs)
+
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit Voice Input",
@@ -132,14 +162,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return menu
     }
 
+    /// Builds the language chooser fresh: "Auto — follow input source" plus the
+    /// five fixed languages, with a checkmark on the active selection. Used by both
+    /// the menu-bar submenu and the Dock menu, so it reads current state each time.
+    private func makeLanguageMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let auto = Settings.shared.languageFollowsInputSource
+        let current = Settings.shared.recognitionLanguage
+
+        let autoItem = NSMenuItem(title: "Auto — follow input source",
+                                  action: #selector(selectLanguage(_:)), keyEquivalent: "")
+        autoItem.target = self
+        autoItem.representedObject = PreferencesWindowController.autoTag
+        autoItem.state = auto ? .on : .off
+        menu.addItem(autoItem)
+
+        menu.addItem(.separator())
+
+        for language in Settings.supportedLanguages {
+            let item = NSMenuItem(title: language.name,
+                                  action: #selector(selectLanguage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = language.code
+            item.state = (!auto && language.code == current) ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
     // MARK: - Menu actions
 
     @objc private func selectLanguage(_ sender: NSMenuItem) {
-        guard let code = sender.representedObject as? String else { return }
-        Settings.shared.recognitionLanguage = code
-        for item in languageItems {
-            item.state = ((item.representedObject as? String) == code) ? .on : .off
+        guard let value = sender.representedObject as? String else { return }
+        if value == PreferencesWindowController.autoTag {
+            Settings.shared.languageFollowsInputSource = true
+        } else {
+            Settings.shared.languageFollowsInputSource = false
+            Settings.shared.recognitionLanguage = value
         }
+    }
+
+    @objc private func openPreferences(_ sender: Any?) {
+        PreferencesWindowController.shared.show()
     }
 
     @objc private func toggleOnDevice(_ sender: NSMenuItem) {
@@ -242,6 +308,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             startAccessibilityPolling()
         }
         refreshMonitorStateItem()
+
+        // Re-sync the dynamic items so a change made elsewhere (Preferences window,
+        // Dock menu) is reflected here.
+        languageMenuItem?.submenu = makeLanguageMenu()
+        onDeviceItem?.state = Settings.shared.onDeviceRecognition ? .on : .off
+        llmEnableItem?.state = Settings.shared.llmEnabled ? .on : .off
+    }
+
+    // MARK: - Dock integration
+
+    /// Right-click ▸ Dock menu: quick language switch + Preferences (Quit is added
+    /// by the system). Built fresh each time so it always reflects current state.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        let language = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
+        language.submenu = makeLanguageMenu()
+        menu.addItem(language)
+
+        let prefs = NSMenuItem(title: "Preferences…",
+                               action: #selector(openPreferences(_:)), keyEquivalent: "")
+        prefs.target = self
+        menu.addItem(prefs)
+        return menu
+    }
+
+    /// Clicking the Dock icon with no open window opens Preferences.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            PreferencesWindowController.shared.show()
+        }
+        return true
     }
 
     private func presentAccessibilityAlert() {
@@ -252,8 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Later")
 
-        // As an accessory (menu-bar-only) app we must activate to bring the alert
-        // to the front.
+        // The app may be in the background, so activate it to bring the alert front.
         NSApp.activate(ignoringOtherApps: true)
 
         if alert.runModal() == .alertFirstButtonReturn,

@@ -12,6 +12,7 @@ final class Settings {
 
     private enum Key {
         static let recognitionLanguage = "recognitionLanguage"
+        static let languageFollowsInputSource = "languageFollowsInputSource"
         static let onDeviceRecognition = "onDeviceRecognition"
         static let llmEnabled = "llmEnabled"
         static let llmBaseURL = "llmBaseURL"
@@ -19,10 +20,13 @@ final class Settings {
     }
 
     private init() {
-        // Defaults: Simplified Chinese works out of the box; on-device recognition
-        // is on by default for privacy; LLM refinement is opt-in.
+        // Defaults: dictation language follows the current input source out of the
+        // box (so it "just works" as the user switches input methods); Simplified
+        // Chinese is the fixed-mode fallback; on-device recognition is on for
+        // privacy; LLM refinement is opt-in.
         defaults.register(defaults: [
             Key.recognitionLanguage: "zh-CN",
+            Key.languageFollowsInputSource: true,
             Key.onDeviceRecognition: true,
             Key.llmEnabled: false,
             Key.llmBaseURL: "",
@@ -30,10 +34,21 @@ final class Settings {
         ])
     }
 
-    /// BCP-47 locale identifier used for speech recognition. Default "zh-CN".
+    /// BCP-47 locale identifier used for speech recognition in *fixed* mode, and as
+    /// the fallback when `languageFollowsInputSource` is on but the current input
+    /// source can't be mapped. Default "zh-CN".
     var recognitionLanguage: String {
         get { defaults.string(forKey: Key.recognitionLanguage) ?? "zh-CN" }
         set { defaults.set(newValue, forKey: Key.recognitionLanguage) }
+    }
+
+    /// When true (the default), the dictation language automatically follows the
+    /// current keyboard input source. When false, `recognitionLanguage` is used.
+    /// These are the two states of a single mutually-exclusive "language" control,
+    /// so they can never conflict.
+    var languageFollowsInputSource: Bool {
+        get { defaults.bool(forKey: Key.languageFollowsInputSource) }
+        set { defaults.set(newValue, forKey: Key.languageFollowsInputSource) }
     }
 
     /// Whether to force on-device speech recognition (privacy).
@@ -68,20 +83,21 @@ final class Settings {
     ]
 }
 
-/// Minimal, language-aware UI strings for the floating capsule. Picks Chinese,
-/// Japanese, or Korean copy based on the active recognition language, English
-/// otherwise. Keeps the HUD feeling native without a full localization stack.
+/// Minimal, language-aware UI strings for the floating capsule. The language is
+/// passed in (the locale the recognizer is actually using for this dictation —
+/// which in Auto mode may differ from the fixed setting), so the HUD copy always
+/// matches what's being transcribed. Keeps the HUD native without a full L10n stack.
 enum L10n {
-    private static var lang: String { Settings.shared.recognitionLanguage }
-
-    static var listening: String {
+    static func listening(_ lang: String) -> String {
+        if lang.hasPrefix("zh-TW") || lang.hasPrefix("zh-Hant") { return "聆聽中…" }
         if lang.hasPrefix("zh") { return "聆听中…" }
         if lang.hasPrefix("ja") { return "聞き取り中…" }
         if lang.hasPrefix("ko") { return "듣는 중…" }
         return "Listening…"
     }
 
-    static var refining: String {
+    static func refining(_ lang: String) -> String {
+        if lang.hasPrefix("zh-TW") || lang.hasPrefix("zh-Hant") { return "優化中…" }
         if lang.hasPrefix("zh") { return "优化中…" }
         if lang.hasPrefix("ja") { return "整えています…" }
         if lang.hasPrefix("ko") { return "다듬는 중…" }

@@ -77,9 +77,10 @@ final class FloatingCapsuleWindow: NSPanel {
     // MARK: Public API
 
     /// Show the capsule centered at the bottom of the main screen with the entry
-    /// spring animation. Resets text to empty and the status to `L10n.listening`.
-    func showListening() {
-        placeholder = L10n.listening
+    /// spring animation. Resets text to empty and the status to the listening copy
+    /// for `language` (the locale being transcribed).
+    func showListening(language: String) {
+        placeholder = L10n.listening(language)
         currentText = ""
 
         waveform.startAnimating()
@@ -132,9 +133,9 @@ final class FloatingCapsuleWindow: NSPanel {
         waveform.setLevel(level)
     }
 
-    /// Switch the status line to `L10n.refining`, keeping the window visible.
-    func showRefining() {
-        let display = L10n.refining
+    /// Switch the status line to the refining copy for `language`, keeping visible.
+    func showRefining(language: String) {
+        let display = L10n.refining(language)
         placeholder = display
         currentText = ""
         label.stringValue = display

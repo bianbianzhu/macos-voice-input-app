@@ -11,12 +11,18 @@ Chinese/English technical speech.
 
 ## Features
 
-- **Push-to-talk dictation** — hold `Fn`, speak, release. A global `CGEvent` tap watches the
-  `Fn` key and *suppresses* it so it never triggers the emoji/dictation picker.
+- **Push-to-talk dictation** — hold `Fn` (≥ ~400 ms), speak, release. A global `CGEvent` tap
+  watches the `Fn` key. A quick `Fn` *tap* is left alone (so it can still switch your input
+  source); only a deliberate hold starts recording, so accidental taps never flash the HUD or
+  spin up the mic.
 - **Streaming transcription** via Apple's Speech framework (`SFSpeechRecognizer`), with a
   real-time partial transcript shown as you talk.
-- **Simplified Chinese by default**, plus Traditional Chinese, English, Japanese, and Korean —
-  switchable from the menu bar (stored in `UserDefaults`).
+- **Language that follows your input source** — by default the dictation language is chosen
+  automatically from whatever keyboard input source is active when you start (tap `Fn` to switch
+  to English → hold `Fn` → dictate English; switch to Pinyin → dictate Chinese). Or lock it to a
+  fixed language: Simplified Chinese, Traditional Chinese, English, Japanese, or Korean. The
+  choice is a single mutually-exclusive control (Auto + the five fixed options), stored in
+  `UserDefaults`.
 - **Elegant floating capsule** — a frameless, nonactivating HUD panel centered at the bottom of
   the screen with a live, RMS-driven 5-bar waveform (it actually reacts to your voice) and an
   elastically-widening transcript label. Spring entry / smooth width / scale-out exit animations.
@@ -85,32 +91,39 @@ Open the menu and check the status line: `✓ Fn dictation ready` means the tap 
 > rebuilds.
 
 > **Don't see the menu-bar icon?** On notched Macs a crowded menu bar can hide newly-added items
-> behind the notch. Quit a couple of other menu-bar apps, or ⌘-drag to rearrange, to reveal the
-> waveform icon. (You can still dictate without seeing it — the Fn shortcut is global.)
+> behind the notch. That's why settings are also reachable from the **Dock icon** (click it, or
+> right-click ▸ Preferences / Language) — independent of the menu bar. You can also quit a couple
+> of other menu-bar apps to reveal the waveform icon. Dictation itself works regardless: `Fn` is
+> global.
 
 ## Usage
 
-1. Click the waveform icon in the menu bar to pick a language or configure LLM refinement.
-2. Focus any text field, **hold `Fn`**, speak, and **release**. The capsule shows your words live;
-   if LLM refinement is on it briefly shows *Refining…* before the cleaned text is pasted.
+1. Open **Preferences** from the Dock icon (click it, or right-click ▸ Preferences) — or use the
+   menu-bar waveform icon if it's visible — to choose the language mode (Auto / fixed), toggle
+   on-device recognition, or configure LLM refinement.
+2. Focus any text field, **hold `Fn`** (briefly past ~400 ms), speak, and **release**. The capsule
+   shows your words live; if LLM refinement is on it briefly shows *Refining…* before the cleaned
+   text is pasted.
 
 ## Project layout
 
 ```
 Package.swift                     SwiftPM manifest (executable target)
 Makefile                          build / app / run / install / clean
-Resources/Info.plist              LSUIElement, usage strings
+Resources/Info.plist              usage strings, bundle metadata
 Resources/VoiceInput.entitlements hardened-runtime mic entitlement
 Sources/VoiceInput/
-  main.swift                      entry point (.accessory policy)
-  AppDelegate.swift               menu bar, wiring, permissions
+  main.swift                      entry point (.regular — Dock icon)
+  AppDelegate.swift               menu bar + Dock menu, wiring, permissions
   Core/Settings.swift             UserDefaults settings + L10n
   Core/KeychainStore.swift        API key in the Keychain
-  Core/AppCoordinator.swift       record → refine → inject lifecycle
+  Core/AppCoordinator.swift       hold-debounce → record → refine → inject lifecycle
   Input/FnKeyMonitor.swift        Fn CGEvent tap (suppressed)
+  Input/InputSourceLanguage.swift current input source → recognition locale
   Input/TextInjector.swift        clipboard + Cmd+V, input-source handling
   Speech/SpeechTranscriber.swift  streaming recognition + RMS levels
   LLM/LLMRefiner.swift            OpenAI-compatible refinement
+  UI/PreferencesWindow.swift      Dock-reachable settings (language/on-device/LLM)
   UI/FloatingCapsuleWindow.swift  the HUD capsule panel
   UI/WaveformView.swift           5-bar RMS waveform
   UI/LLMSettingsWindow.swift      LLM settings window
