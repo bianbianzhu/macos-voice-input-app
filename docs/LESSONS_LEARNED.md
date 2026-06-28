@@ -83,3 +83,58 @@ cdhash — verified end-to-end: a full `make clean && make app` changes the exec
 yet the Accessibility grant stays (`codesign --verify -R` against the granted requirement still
 passes, TCC `auth_value` stays `2`). So a one-time grant now survives every rebuild; ad-hoc
 remains the automatic fallback when the cert is absent.
+
+---
+
+# Lessons Learned — duplicated chunks in long dictation (UAT)
+
+## Symptom
+
+On long dictation (≈1 min+, both English and 中文), the injected text contained **duplicated
+chunks** the user never repeated — e.g. `…which is a conversational It saves a lot of time…which
+is a conversational and operation`. The two copies were *slightly different* (`in my`→`my`,
+`a role`→`real`, `其`→`族`), which was the key tell: two recognition passes over the same audio,
+not the user repeating themselves.
+
+## Root cause
+
+`SFSpeechRecognizer`'s streaming hypothesis is *replaced* with a fresh, shorter string after a
+short pause (a silent endpoint reset; no `isFinal`). We commit the prior segment across that reset
+so long dictation isn't lost. But the reset is sometimes a **rewind**: the fresh string
+RE-TRANSCRIBES audio already in the committed text (re-worded, even re-capitalized). Committing the
+prior segment and then appending the re-transcription duplicated the overlapping chunk.
+
+## How it was diagnosed (a reproduction harness, not guessing)
+
+- Built a standalone harness that feeds `say`-synthesized audio (≈100 s, looped to force long
+  sessions) through a **real** `SFSpeechRecognizer` running the exact commit/restart logic, logging
+  every callback plus an `OVERLAP=true/false` probe at each reset. It captured a live rewind
+  (`OVERLAP=true`), reproducing the bug deterministically — and showed the on-device recognizer runs
+  **one continuous task for 200 s+** on macOS 15.6 (no ~1-min cap), so the request-restart path was
+  *not* the cause; the silent rewind reset was.
+- Confirmed the dup is created entirely in the transcript state machine (the injector pastes
+  `stop()`'s value verbatim).
+
+## The fix
+
+- Extracted the string logic into a pure, framework-free `VoiceInputCore.TranscriptComposer` so it
+  is unit-testable without a microphone; `SpeechTranscriber` delegates to it under its existing lock.
+- Overlap suppression: a first attempt anchored on the segment's exact 24-char prefix — but real
+  rewinds change words *throughout*, including the leading word, so it kept missing. The robust
+  version finds the **longest identical run** shared by the committed tail and the segment and
+  splices there (run is identical on both sides → no dup, no broken word).
+- Two guards prevent data loss / false merges: the shared run must be long enough (≥24 chars, so
+  intentional short repeats like `please remember to …` / `请记得写` are kept), and the segment from
+  the run onward must be long enough to re-cover the committed tail it replaces.
+
+## Durable takeaways
+
+1. **Reproduce recognizer bugs with synthesized audio + a harness.** `say` + buffer-feeding a real
+   recognizer turned an intermittent field bug into a deterministic, loggable repro — and disproved
+   a wrong assumption (the ~1-min cap) with evidence.
+2. **Exact-prefix matching is too brittle for re-transcriptions.** They diverge at the word level
+   everywhere; anchor on the longest identical *run*, not the prefix.
+3. **Prefer leaving a rare duplicate over silent data loss.** Every heuristic here fails safe to a
+   plain join; the length guard exists specifically to never drop trailing committed text.
+4. **Put pure logic in its own testable module.** The real UAT failures (EN/ZH/repeat lists) are now
+   permanent fixtures in `swift run TranscriptComposerTests`.

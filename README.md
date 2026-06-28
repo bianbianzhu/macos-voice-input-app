@@ -16,7 +16,10 @@ Chinese/English technical speech.
   source); only a deliberate hold starts recording, so accidental taps never flash the HUD or
   spin up the mic.
 - **Streaming transcription** via Apple's Speech framework (`SFSpeechRecognizer`), with a
-  real-time partial transcript shown as you talk.
+  real-time partial transcript shown as you talk. Long, multi-utterance dictation is composed
+  across Apple's silent endpoint resets without losing earlier text — and without the duplicated
+  chunks those resets can otherwise produce when the recognizer "rewinds" and re-transcribes
+  audio it already emitted (see `Sources/VoiceInputCore/TranscriptComposer.swift`).
 - **Language that follows your input source** — by default the dictation language is chosen
   automatically from whatever keyboard input source is active when you start (tap `Fn` to switch
   to English → hold `Fn` → dictate English; switch to Pinyin → dictate Chinese). Or lock it to a
@@ -93,6 +96,13 @@ make install   # build and copy to /Applications
 make clean
 ```
 
+Run the transcript-composition unit tests (plain runner, no Xcode/XCTest needed — works with
+just the Command Line Tools):
+
+```sh
+swift run TranscriptComposerTests
+```
+
 > Re-running while an instance is open: `make run`'s `open` may just re-focus the running
 > process instead of launching the new build. To run fresh code: `killall VoiceInput; make run`.
 
@@ -145,14 +155,18 @@ means the tap is live; `⚠︎ Waiting for Accessibility permission…` means it
 ## Project layout
 
 ```
-Package.swift                     SwiftPM manifest (executable target)
+Package.swift                     SwiftPM manifest (core lib + executable + tests)
 Makefile                          build / app / run / install / clean (+ identity auto-detect)
 Resources/Info.plist              usage strings, bundle metadata, icon
 Resources/VoiceInput.entitlements hardened-runtime mic entitlement
 Resources/AppIcon.icns            Dock / app icon
 scripts/make-signing-cert.sh      create the local "VoiceInput Local" signing identity
 scripts/makeicon.swift            regenerate AppIcon.icns artwork
-docs/LESSONS_LEARNED.md           UAT debugging write-up (notch + TCC/ad-hoc signing)
+docs/LESSONS_LEARNED.md           UAT debugging write-ups (notch + TCC/ad-hoc signing; dup chunks)
+Sources/VoiceInputCore/
+  TranscriptComposer.swift        pure (framework-free) transcript composition + dedup — unit-tested
+Tests/VoiceInputCoreTests/
+  main.swift                      plain test runner — `swift run TranscriptComposerTests`
 Sources/VoiceInput/
   main.swift                      entry point (.regular — Dock icon)
   AppDelegate.swift               menu bar + Dock menu, wiring, permissions
@@ -162,7 +176,8 @@ Sources/VoiceInput/
   Input/FnKeyMonitor.swift        Fn CGEvent tap (suppressed)
   Input/InputSourceLanguage.swift current input source → recognition locale
   Input/TextInjector.swift        clipboard + Cmd+V, input-source handling
-  Speech/SpeechTranscriber.swift  streaming recognition + RMS levels
+  Speech/SpeechTranscriber.swift  streaming recognition + RMS levels (delegates composition
+                                  to VoiceInputCore.TranscriptComposer)
   LLM/LLMRefiner.swift            OpenAI-compatible refinement
   UI/PreferencesWindow.swift      Dock-reachable settings (language/on-device/LLM)
   UI/FloatingCapsuleWindow.swift  the HUD capsule panel

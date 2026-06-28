@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Speech
+import VoiceInputCore
 
 /// Streams microphone audio through `SFSpeechRecognizer`, exposing live partial
 /// transcripts and a normalized audio level for the waveform UI.
@@ -15,14 +16,17 @@ import Speech
 /// - All callbacks documented as "MAIN thread" are hopped to `DispatchQueue.main`
 ///   because both the audio tap and the recognition task fire on background queues.
 ///
-/// Long / multi-utterance dictation:
-/// - `transcript` is the FULL composed live string (`committedText` + separator +
-///   `currentSegment`) and is what `stop()` returns. A short single-utterance hold
-///   never touches `committedText`, so its output is identical to a plain
+/// Long / multi-utterance dictation (the composition logic lives in the pure,
+/// unit-tested `TranscriptComposer`; this type just feeds it recognizer callbacks
+/// under the lock and caches its `composed` output in `transcript`):
+/// - `transcript` is the FULL composed live string and is what `stop()` returns. A
+///   short single-utterance hold never commits, so its output is identical to a plain
 ///   best-transcription stream.
-/// - Apple's streaming recognizer silently endpoints after a short pause and
-///   REPLACES `bestTranscription` with a fresh short string (no `isFinal`). We
-///   DETECT that backward jump and commit the prior segment so it is not lost.
+/// - Apple's streaming recognizer silently endpoints after a short pause and REPLACES
+///   `bestTranscription` with a fresh short string (no `isFinal`). The composer DETECTS
+///   that backward jump and commits the prior segment so it is not lost — and, when the
+///   reset is a *rewind* that re-transcribes already-committed audio, suppresses the
+///   overlap so the chunk is not duplicated.
 /// - Around the ~1-minute on-device cap the task can terminate with an error and
 ///   stop emitting. We react by swapping in a fresh request + task while keeping
 ///   the SAME engine + tap, so dictation continues across the seam.
@@ -55,12 +59,12 @@ final class SpeechTranscriber {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
 
-    /// Full composed live transcript returned by `stop()`.
+    /// Full composed live transcript returned by `stop()`. Cached from `composer`
+    /// so `stop()` can return it without recomposing.
     private var transcript: String = ""
-    /// Segments already finalized across silent resets and request restarts.
-    private var committedText: String = ""
-    /// The recognizer's current in-flight hypothesis (not yet committed).
-    private var currentSegment: String = ""
+    /// Pure transcript state machine (commit-across-resets + overlap suppression).
+    /// Touched only under `transcriptLock`.
+    private var composer = TranscriptComposer()
     /// Monotonic tag, bumped on every start / restart / stop, so a retired task's
     /// late callbacks are recognized as stale and ignored.
     private var generation: Int = 0
@@ -154,8 +158,7 @@ final class SpeechTranscriber {
         // append to (the tap reads `self.request` under the lock).
         transcriptLock.lock()
         transcript = ""
-        committedText = ""
-        currentSegment = ""
+        composer.reset()
         isStopping = false
         generation += 1
         let gen = generation
@@ -225,31 +228,14 @@ final class SpeechTranscriber {
         }
 
         if let result = result {
-            let p = result.bestTranscription.formattedString
-
-            // Detect Apple's silent mid-session endpoint reset: the live hypothesis
-            // jumps backward to a fresh, much shorter string that does NOT extend the
-            // current one. Commit the prior segment so it is not overwritten. A
-            // normal in-place revision ("I scream" -> "ice cream") keeps a long
-            // shared prefix and does NOT count as a reset.
-            if !currentSegment.isEmpty,
-               SpeechTranscriber.isBackwardReset(from: currentSegment, to: p) {
-                committedText = composedLocked()
-            }
-            currentSegment = p
-
-            // `isFinal` does not fire per-utterance for a streaming request, so when
-            // it DOES arrive mid-session it means the recognizer hit its cap (the
-            // on-device limit can finalize this way INSTEAD of erroring). Commit and
-            // restart below — otherwise capture would silently freeze until Fn-up and
-            // everything spoken after the cap would be lost.
+            // The composer detects Apple's silent endpoint reset, commits across it,
+            // and suppresses re-transcription overlap (the rewind that would otherwise
+            // duplicate a chunk). `isFinal` only arrives mid-session when the recognizer
+            // hits its cap; committing here lets us restart without losing capture.
             let didFinalize = result.isFinal
-            if didFinalize {
-                committedText = composedLocked()
-                currentSegment = ""
-            }
+            composer.apply(result.bestTranscription.formattedString, isFinal: didFinalize)
 
-            let composed = composedLocked()
+            let composed = composer.composed
             transcript = composed
             transcriptLock.unlock()
 
@@ -272,9 +258,8 @@ final class SpeechTranscriber {
             // have, then swap in a fresh request + task to keep dictation alive. A
             // benign cancellation from `stop()` is already filtered above because
             // `stop()` sets `isStopping` and bumps `generation` first.
-            committedText = composedLocked()
-            currentSegment = ""
-            transcript = committedText
+            composer.commitOnError()
+            transcript = composer.composed
             transcriptLock.unlock()
             restart()
             return
@@ -370,40 +355,6 @@ final class SpeechTranscriber {
             request.requiresOnDeviceRecognition = true
         }
         return request
-    }
-
-    /// Composes the full live transcript: committed segments + the in-flight one,
-    /// joined by a single space ONLY between two ASCII word characters (so zh-CN and
-    /// punctuation boundaries get no space, and an empty prefix yields no leading
-    /// separator). The caller MUST hold `transcriptLock`.
-    private func composedLocked() -> String {
-        if committedText.isEmpty { return currentSegment }
-        if currentSegment.isEmpty { return committedText }
-        let separator: String
-        if let last = committedText.last, let first = currentSegment.first,
-           SpeechTranscriber.isASCIIWordChar(last), SpeechTranscriber.isASCIIWordChar(first) {
-            separator = " "
-        } else {
-            separator = ""
-        }
-        return committedText + separator + currentSegment
-    }
-
-    /// True for ASCII letters, digits, and underscore — the boundary characters
-    /// that need a separating space between two committed English segments.
-    private static func isASCIIWordChar(_ c: Character) -> Bool {
-        return c.isASCII && (c.isLetter || c.isNumber || c == "_")
-    }
-
-    /// Heuristic for Apple's silent endpoint reset: the new hypothesis `p` is
-    /// shorter than the current segment AND does not share a long common prefix with
-    /// it. A normal revision keeps most of its prefix, so we require the shared
-    /// prefix to cover less than half of `p` to count as a reset. (An empty `p`
-    /// shares a 0-length prefix with a 0 threshold and is therefore NOT a reset.)
-    private static func isBackwardReset(from current: String, to p: String) -> Bool {
-        guard p.count < current.count else { return false }
-        let shared = current.commonPrefix(with: p).count
-        return Double(shared) < 0.5 * Double(p.count)
     }
 
     private func currentTranscript() -> String {
