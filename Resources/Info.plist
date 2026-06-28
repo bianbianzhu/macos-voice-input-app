@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>VoiceInput</string>
+	<key>CFBundleDisplayName</key>
+	<string>Voice Input</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.voiceinput.app</string>
+	<key>CFBundleExecutable</key>
+	<string>VoiceInput</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Voice Input listens to your microphone while you hold the Fn key, so it can transcribe your speech into the focused text field.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Voice Input uses speech recognition to convert what you say into text. On-device recognition can be enabled in the menu for full privacy.</string>
+</dict>
+</plist>
