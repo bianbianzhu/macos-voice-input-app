@@ -17,9 +17,12 @@ MACOS_DIR   := $(CONTENTS)/MacOS
 RES_DIR     := $(CONTENTS)/Resources
 ENTITLEMENTS := Resources/$(APP_NAME).entitlements
 
-# Use the developer's signing identity if provided, otherwise ad-hoc ("-").
-# Ad-hoc signing satisfies the "signed .app" requirement for personal use.
-SIGN_IDENTITY ?= -
+# Signing identity. Defaults to the local self-signed "VoiceInput Local" cert when
+# it's present — a STABLE identity means the macOS Accessibility/TCC grant survives
+# rebuilds (ad-hoc changes the code hash every build and invalidates the grant).
+# Falls back to ad-hoc ("-") when the cert isn't installed. Override for a real
+# Developer ID with:  make SIGN_IDENTITY="Developer ID Application: …"
+SIGN_IDENTITY ?= $(shell security find-identity -p codesigning 2>/dev/null | grep -q 'VoiceInput Local' && echo 'VoiceInput Local' || echo '-')
 
 .PHONY: all build app sign run install clean
 
