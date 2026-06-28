@@ -73,3 +73,13 @@ After `make run`, VoiceInput launched successfully (process alive, no crash), bu
 5. **Guard diagnostics against false negatives** — a control signal (the Shift press) prevents
    reading "no events" as "the key is broken."
 6. **Notch Macs hide overflow menu-bar items.** Awareness, not a code fix.
+
+## Resolution (implemented)
+
+Takeaway 1(b) is now the shipped default: `scripts/make-signing-cert.sh` creates a local
+self-signed **"VoiceInput Local"** Code Signing identity, and the Makefile auto-detects and
+signs with it. The resulting designated requirement keys on the certificate leaf, not the
+cdhash — verified end-to-end: a full `make clean && make app` changes the executable's cdhash
+yet the Accessibility grant stays (`codesign --verify -R` against the granted requirement still
+passes, TCC `auth_value` stays `2`). So a one-time grant now survives every rebuild; ad-hoc
+remains the automatic fallback when the cert is absent.

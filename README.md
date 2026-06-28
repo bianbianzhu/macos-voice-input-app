@@ -22,7 +22,8 @@ Chinese/English technical speech.
   to English → hold `Fn` → dictate English; switch to Pinyin → dictate Chinese). Or lock it to a
   fixed language: Simplified Chinese, Traditional Chinese, English, Japanese, or Korean. The
   choice is a single mutually-exclusive control (Auto + the five fixed options), stored in
-  `UserDefaults`.
+  `UserDefaults`. Auto follows your *installed* keyboard input sources (System Settings →
+  Keyboard); if you only have one, pick a fixed language.
 - **Elegant floating capsule** — a frameless, nonactivating HUD panel centered at the bottom of
   the screen with a live, RMS-driven 5-bar waveform (it actually reacts to your voice) and an
   elastically-widening transcript label. Spring entry / smooth width / scale-out exit animations.
@@ -52,43 +53,79 @@ Chinese/English technical speech.
   dictating into, and aborts into secure (password) fields.
 - **No telemetry.** The only outbound network request is to *your* configured LLM endpoint.
 
+## Requirements
+
+- **macOS 14 (Sonoma) or later.**
+- **Xcode Command Line Tools** — provides the Swift toolchain and `codesign`:
+  ```sh
+  xcode-select --install
+  ```
+  (A full Xcode install works too.) `make` and `openssl` already ship with macOS — the cert
+  script works with both the system LibreSSL and a Homebrew OpenSSL 3.x on your `PATH`.
+
+## Setup on a new machine
+
+```sh
+# 1. (recommended) Create a local code-signing identity so the macOS permission
+#    grants survive every rebuild. One-time. See "Signing" for why.
+bash scripts/make-signing-cert.sh
+
+# 2. Build, sign, and launch.
+make run
+```
+
+On the **first** signing, macOS shows *"codesign wants to use key 'VoiceInput Local'"* →
+click **Always Allow** (so it never asks again). Then grant the three permissions once
+(see *Permissions* below). You can skip step 1 and use ad-hoc signing, but then you'll
+re-grant Accessibility after every rebuild (see *Signing*).
+
+> If you accidentally click **Deny** on that keychain prompt, `make app` will fail to sign.
+> Re-run `bash scripts/make-signing-cert.sh` (or delete the "VoiceInput Local" key in Keychain
+> Access first), then build again and click **Always Allow**.
+
 ## Build & run
 
 ```sh
 make build     # compile the release binary (SwiftPM)
-make app       # assemble + ad-hoc sign VoiceInput.app (hardened runtime)
+make app       # assemble + sign VoiceInput.app (hardened runtime)
 make run       # build the bundle and launch it
 make install   # build and copy to /Applications
 make clean
 ```
 
-`make app` produces `VoiceInput.app`, ad-hoc signed (`codesign -s -`) with the hardened runtime
-enabled — sufficient for personal use; no notarization required. To sign with a real Developer ID
-instead, pass `SIGN_IDENTITY="Developer ID Application: …"` to `make`.
+> Re-running while an instance is open: `make run`'s `open` may just re-focus the running
+> process instead of launching the new build. To run fresh code: `killall VoiceInput; make run`.
 
-## First-run permissions
+## Signing — why the permission grants survive rebuilds
 
-Launch the app, then grant these in **System Settings → Privacy & Security**:
+`make app` auto-detects a local **`VoiceInput Local`** code-signing certificate (created by
+`scripts/make-signing-cert.sh`) and signs with it; if it's absent it falls back to **ad-hoc**
+(`codesign -s -`). Both enable the hardened runtime and satisfy the "signed .app" requirement
+for personal use — no notarization needed. For distribution, pass a real Developer ID:
+`make SIGN_IDENTITY="Developer ID Application: …"`.
+
+macOS ties permission grants (Accessibility / Microphone / Speech) to the app's code-signing
+**identity**, not its per-build hash. With the stable `VoiceInput Local` cert the identity never
+changes, so **you grant once and every future rebuild keeps the grant**. With **ad-hoc** signing
+the hash changes each build and invalidates the grant — you'd have to
+`tccutil reset Accessibility com.voiceinput.app`, relaunch, and re-grant after every rebuild.
+That's why the cert is recommended. (Self-signed = untrusted by Gatekeeper, which is fine for
+local/personal use — same trust level as ad-hoc, but with a *stable* identity.)
+
+## Permissions
+
+Grant these once in **System Settings → Privacy & Security**:
 
 1. **Microphone** — to hear you.
 2. **Speech Recognition** — to transcribe.
 3. **Accessibility** — required for the global `Fn` tap and for sending the paste keystroke.
 
-The app prompts for Accessibility on first launch. Once you toggle it on, the Fn monitor starts
-**automatically within ~1.5 s — no relaunch needed** (the app polls for the grant and self-heals).
-Open the menu and check the status line: `✓ Fn dictation ready` means the tap is live;
-`⚠︎ Waiting for Accessibility permission…` means it's still waiting on the grant.
-
-> **Rebuilding invalidates the Accessibility grant.** Because the app is **ad-hoc signed**, every
-> `make build` / `make run` produces a new code signature, and macOS ties the Accessibility grant
-> to that signature. After a rebuild, System Settings may still *show* VoiceInput as enabled while
-> it is no longer effective. The cleanest workaround:
-> ```sh
-> tccutil reset Accessibility com.voiceinput.app   # clear the stale grant
-> ```
-> then relaunch and re-grant. For day-to-day use, **build once, grant, and don't rebuild** — or
-> sign with a stable Developer ID / self-signed identity (`SIGN_IDENTITY=…`) so the grant survives
-> rebuilds.
+On first launch the app surfaces all three system prompts (Microphone, Speech Recognition,
+Accessibility) automatically — approve them; you don't need to hold `Fn` first. Once you toggle
+Accessibility on, the Fn monitor starts **automatically within ~1.5 s — no relaunch needed**
+(the app polls for the grant and self-heals).
+Open the menu (or right-click the Dock icon) and check the status line: `✓ Fn dictation ready`
+means the tap is live; `⚠︎ Waiting for Accessibility permission…` means it's still waiting.
 
 > **Don't see the menu-bar icon?** On notched Macs a crowded menu bar can hide newly-added items
 > behind the notch. That's why settings are also reachable from the **Dock icon** (click it, or
@@ -109,9 +146,13 @@ Open the menu and check the status line: `✓ Fn dictation ready` means the tap 
 
 ```
 Package.swift                     SwiftPM manifest (executable target)
-Makefile                          build / app / run / install / clean
-Resources/Info.plist              usage strings, bundle metadata
+Makefile                          build / app / run / install / clean (+ identity auto-detect)
+Resources/Info.plist              usage strings, bundle metadata, icon
 Resources/VoiceInput.entitlements hardened-runtime mic entitlement
+Resources/AppIcon.icns            Dock / app icon
+scripts/make-signing-cert.sh      create the local "VoiceInput Local" signing identity
+scripts/makeicon.swift            regenerate AppIcon.icns artwork
+docs/LESSONS_LEARNED.md           UAT debugging write-up (notch + TCC/ad-hoc signing)
 Sources/VoiceInput/
   main.swift                      entry point (.regular — Dock icon)
   AppDelegate.swift               menu bar + Dock menu, wiring, permissions

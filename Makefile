@@ -2,7 +2,7 @@
 #
 # Targets:
 #   make build    Compile the release binary with SwiftPM
-#   make app      Assemble + ad-hoc sign the .app bundle (hardened runtime)
+#   make app      Assemble + sign the .app (auto-detects 'VoiceInput Local' cert, else ad-hoc)
 #   make run      Build the bundle and launch it
 #   make install  Build and copy the bundle to /Applications
 #   make clean    Remove build artifacts and the bundle
@@ -42,7 +42,8 @@ app: build
 	$(MAKE) sign
 	@echo ">> Done: $(APP_BUNDLE)"
 
-# Ad-hoc sign with hardened runtime + entitlements (audio input).
+# Sign with hardened runtime + entitlements (audio input). Uses $(SIGN_IDENTITY):
+# the local 'VoiceInput Local' cert if present (stable identity), else ad-hoc.
 # No --deep: the bundle has a single statically-linked executable and no nested
 # code, and Apple discourages --deep for signing (it applies entitlements only to
 # the top-level binary). Sign the one executable directly.
