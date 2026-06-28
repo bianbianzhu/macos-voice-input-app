@@ -192,6 +192,21 @@ final class FloatingCapsuleWindow: NSPanel {
         animationBehavior = .none
     }
 
+    /// A resizable capsule-shaped mask for the visual-effect view. Cap insets make
+    /// it stretch cleanly as the capsule widens with the text.
+    private static func capsuleMask(cornerRadius: CGFloat) -> NSImage {
+        let edge = cornerRadius * 2 + 1
+        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: cornerRadius, left: cornerRadius,
+                                       bottom: cornerRadius, right: cornerRadius)
+        image.resizingMode = .stretch
+        return image
+    }
+
     private func configureContent() {
         effectView.material = .hudWindow
         effectView.blendingMode = .behindWindow
@@ -199,6 +214,15 @@ final class FloatingCapsuleWindow: NSPanel {
         effectView.wantsLayer = true
         effectView.layer?.cornerRadius = capsuleCornerRadius
         effectView.layer?.masksToBounds = true
+        // layer.cornerRadius clips subviews but NOT the vibrancy backdrop, so on a
+        // light background the material's full rectangle (and the window's
+        // rectangular shadow) would show as a white box. A resizable rounded mask
+        // image clips the material itself to the capsule shape; the window shadow
+        // then follows that shape too.
+        effectView.maskImage = FloatingCapsuleWindow.capsuleMask(cornerRadius: capsuleCornerRadius)
+        // Keep the HUD dark regardless of the system appearance, so the white
+        // waveform and text stay legible on any background.
+        effectView.appearance = NSAppearance(named: .darkAqua)
         contentView = effectView
 
         label.font = labelFont
@@ -211,9 +235,9 @@ final class FloatingCapsuleWindow: NSPanel {
         label.alignment = .left
         label.usesSingleLineMode = true
         label.maximumNumberOfLines = 1
-        label.lineBreakMode = .byTruncatingTail
+        label.lineBreakMode = .byTruncatingHead
         label.cell?.usesSingleLineMode = true
-        label.cell?.lineBreakMode = .byTruncatingTail
+        label.cell?.lineBreakMode = .byTruncatingHead
         // The window owns the width; let the label truncate rather than force-resize.
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
