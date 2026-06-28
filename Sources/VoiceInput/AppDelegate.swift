@@ -8,7 +8,7 @@ import ApplicationServices
 /// Privacy note: nothing here ever logs, prints, or persists audio, transcribed
 /// text, keystrokes, or the API key — it only reads non-secret toggles from
 /// `Settings` and delegates the secret-handling to `KeychainStore`/`LLMRefiner`.
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Retained so the menu-bar item and the event tap stay alive for the
     // lifetime of the app.
@@ -21,6 +21,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var languageItems: [NSMenuItem] = []
     private var onDeviceItem: NSMenuItem?
     private var llmEnableItem: NSMenuItem?
+
+    // Reflects whether the Fn monitor is live, and the timer that waits for the
+    // user to grant Accessibility so the monitor can start without a relaunch.
+    private var statusStateItem: NSMenuItem?
+    private var accessibilityPollTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -38,7 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             image?.isTemplate = true
             button.image = image
         }
-        item.menu = buildMenu()
+        let menu = buildMenu()
+        // Recompute readiness each time the menu opens so the status line never
+        // shows a stale "ready" if Accessibility was revoked after the tap started.
+        menu.delegate = self
+        item.menu = menu
         statusItem = item
     }
 
@@ -52,6 +61,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let title = NSMenuItem(title: "Hold Fn to dictate", action: nil, keyEquivalent: "")
         title.isEnabled = false
         menu.addItem(title)
+
+        // Live readiness indicator (updated when the Fn monitor starts/stops).
+        let state = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        state.isEnabled = false
+        menu.addItem(state)
+        statusStateItem = state
+        refreshMonitorStateItem()
 
         menu.addItem(.separator())
 
@@ -169,20 +185,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Ask the system to surface the Accessibility prompt at launch. This is the
         // permission the global Fn-key event tap and text injection depend on.
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+        let trusted = AXIsProcessTrustedWithOptions(options)
 
-        // Install the global event tap. If it can't be created the user almost
-        // certainly hasn't granted Accessibility yet — guide them to System Settings.
-        if !fnMonitor.start() {
+        // Install the global event tap. If it starts, we're ready.
+        if fnMonitor.start() {
+            refreshMonitorStateItem()
+            return
+        }
+
+        // Not trusted yet — very common right after a rebuild, because ad-hoc
+        // re-signing changes the app's code signature and invalidates the previous
+        // Accessibility grant. Guide the user, then poll so the monitor starts the
+        // instant access is granted, with no relaunch required.
+        if !trusted {
             presentAccessibilityAlert()
         }
+        startAccessibilityPolling()
+        refreshMonitorStateItem()
+    }
+
+    /// Poll for Accessibility trust and start the Fn monitor the moment it is
+    /// granted, so the user never has to quit and relaunch after toggling access.
+    private func startAccessibilityPolling() {
+        guard accessibilityPollTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            guard AXIsProcessTrusted() else { return }
+            if self.fnMonitor.start() {
+                self.accessibilityPollTimer?.invalidate()
+                self.accessibilityPollTimer = nil
+                self.refreshMonitorStateItem()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        accessibilityPollTimer = timer
+    }
+
+    /// Update the disabled status line in the menu to reflect *live* readiness.
+    /// Readiness requires both an installed tap AND current Accessibility trust, so
+    /// the line can't keep asserting "ready" after access is revoked mid-session.
+    private func refreshMonitorStateItem() {
+        let ready = fnMonitor.isActive && AXIsProcessTrusted()
+        statusStateItem?.title = ready
+            ? "✓ Fn dictation ready"
+            : "⚠︎ Waiting for Accessibility permission…"
+    }
+
+    // MARK: - NSMenuDelegate
+
+    func menuWillOpen(_ menu: NSMenu) {
+        // If Accessibility was revoked while running, the tap is dead but the
+        // monitor still holds a (now useless) port. Drop it and resume polling so
+        // the monitor automatically recovers if access is granted again.
+        if fnMonitor.isActive && !AXIsProcessTrusted() {
+            fnMonitor.stop()
+            startAccessibilityPolling()
+        }
+        refreshMonitorStateItem()
     }
 
     private func presentAccessibilityAlert() {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Accessibility Access Needed"
-        alert.informativeText = "Voice Input needs Accessibility access to detect the Fn key and insert text into the focused field.\n\nOpen System Settings ▸ Privacy & Security ▸ Accessibility, enable Voice Input, then relaunch the app."
+        alert.informativeText = "Voice Input needs Accessibility access to detect the Fn key and insert text into the focused field.\n\nOpen System Settings ▸ Privacy & Security ▸ Accessibility and enable Voice Input. Dictation activates automatically once access is granted — no relaunch needed."
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Later")
 

@@ -68,8 +68,25 @@ Launch the app, then grant these in **System Settings → Privacy & Security**:
 2. **Speech Recognition** — to transcribe.
 3. **Accessibility** — required for the global `Fn` tap and for sending the paste keystroke.
 
-The app prompts for Accessibility on first launch; if the `Fn` key isn't responding, confirm
-`VoiceInput.app` is enabled under Accessibility and relaunch.
+The app prompts for Accessibility on first launch. Once you toggle it on, the Fn monitor starts
+**automatically within ~1.5 s — no relaunch needed** (the app polls for the grant and self-heals).
+Open the menu and check the status line: `✓ Fn dictation ready` means the tap is live;
+`⚠︎ Waiting for Accessibility permission…` means it's still waiting on the grant.
+
+> **Rebuilding invalidates the Accessibility grant.** Because the app is **ad-hoc signed**, every
+> `make build` / `make run` produces a new code signature, and macOS ties the Accessibility grant
+> to that signature. After a rebuild, System Settings may still *show* VoiceInput as enabled while
+> it is no longer effective. The cleanest workaround:
+> ```sh
+> tccutil reset Accessibility com.voiceinput.app   # clear the stale grant
+> ```
+> then relaunch and re-grant. For day-to-day use, **build once, grant, and don't rebuild** — or
+> sign with a stable Developer ID / self-signed identity (`SIGN_IDENTITY=…`) so the grant survives
+> rebuilds.
+
+> **Don't see the menu-bar icon?** On notched Macs a crowded menu bar can hide newly-added items
+> behind the notch. Quit a couple of other menu-bar apps, or ⌘-drag to rearrange, to reveal the
+> waveform icon. (You can still dictate without seeing it — the Fn shortcut is global.)
 
 ## Usage
 

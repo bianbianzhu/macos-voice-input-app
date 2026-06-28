@@ -29,6 +29,10 @@ final class FnKeyMonitor {
     /// Last observed state of the Fn modifier; drives edge detection.
     private var fnPressed = false
 
+    /// Whether the event tap is currently installed and listening. Used by the
+    /// app delegate to reflect readiness and to gate accessibility-grant polling.
+    var isActive: Bool { eventTap != nil }
+
     /// Installs a `CGEvent` tap listening ONLY for `.flagsChanged` and starts
     /// delivering Fn transitions. Returns `false` if the tap could not be created —
     /// most commonly because the app has not been granted Accessibility permission.
