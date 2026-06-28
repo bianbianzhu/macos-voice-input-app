@@ -14,6 +14,18 @@ import Speech
 ///   written to disk. Nothing in this type prints.
 /// - All callbacks documented as "MAIN thread" are hopped to `DispatchQueue.main`
 ///   because both the audio tap and the recognition task fire on background queues.
+///
+/// Long / multi-utterance dictation:
+/// - `transcript` is the FULL composed live string (`committedText` + separator +
+///   `currentSegment`) and is what `stop()` returns. A short single-utterance hold
+///   never touches `committedText`, so its output is identical to a plain
+///   best-transcription stream.
+/// - Apple's streaming recognizer silently endpoints after a short pause and
+///   REPLACES `bestTranscription` with a fresh short string (no `isFinal`). We
+///   DETECT that backward jump and commit the prior segment so it is not lost.
+/// - Around the ~1-minute on-device cap the task can terminate with an error and
+///   stop emitting. We react by swapping in a fresh request + task while keeping
+///   the SAME engine + tap, so dictation continues across the seam.
 final class SpeechTranscriber {
 
     // MARK: Public callbacks
@@ -32,15 +44,32 @@ final class SpeechTranscriber {
     // MARK: Private audio/recognition state
 
     private let audioEngine = AVAudioEngine()
+
+    /// Everything below is touched from background queues (the audio tap and the
+    /// recognition handler) as well as the main thread (start/stop), so every
+    /// access is serialized through `transcriptLock`. The only relaxation is in
+    /// `start()`, where these are published while still single-threaded BEFORE the
+    /// tap or task can fire.
+    private let transcriptLock = NSLock()
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
 
-    /// Best transcript captured so far. Updated from the recognition task callback
-    /// (a background queue) and read by `stop()` on the main thread, so access is
-    /// serialized with a lock.
-    private let transcriptLock = NSLock()
+    /// Full composed live transcript returned by `stop()`.
     private var transcript: String = ""
+    /// Segments already finalized across silent resets and request restarts.
+    private var committedText: String = ""
+    /// The recognizer's current in-flight hypothesis (not yet committed).
+    private var currentSegment: String = ""
+    /// Monotonic tag, bumped on every start / restart / stop, so a retired task's
+    /// late callbacks are recognized as stale and ignored.
+    private var generation: Int = 0
+    /// Set first in `stop()` so an in-flight `restart()` no-ops and racing
+    /// callbacks bail out.
+    private var isStopping: Bool = false
+    /// Whether on-device recognition was negotiated for this session; a restart
+    /// rebuilds its request with the same setting.
+    private var useOnDeviceRecognition: Bool = false
 
     private enum TranscriberError: Error {
         case microphoneAccessDenied
@@ -105,17 +134,10 @@ final class SpeechTranscriber {
             throw TranscriberError.recognizerUnavailable
         }
 
-        // Build the streaming request.
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
         // Honor the on-device preference only when the locale actually supports it;
         // otherwise leave it server-based so recognition still works.
-        if onDevice && recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
-
-        // Reset captured transcript for the new session.
-        setTranscript("")
+        let useOnDevice = onDevice && recognizer.supportsOnDeviceRecognition
+        let request = SpeechTranscriber.makeRequest(onDevice: useOnDevice)
 
         // Configure the input tap using the input node's native output format.
         let inputNode = audioEngine.inputNode
@@ -127,56 +149,196 @@ final class SpeechTranscriber {
         // Remove any lingering tap before installing (idempotent / crash-safe).
         inputNode.removeTap(onBus: 0)
 
-        // Capture `request` strongly in the tap so buffers always reach a live
-        // request; the engine is stopped before `endAudio()` in `stop()`, so we
-        // never append after the request has been ended.
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self, request] buffer, _ in
-            request.append(buffer)
-            guard let self = self else { return }
-            let level = SpeechTranscriber.normalizedRMSLevel(from: buffer)
-            DispatchQueue.main.async {
-                self.onLevel?(level)
-            }
-        }
+        // Reset session state and publish the request/recognizer BEFORE installing
+        // the tap, so the very first captured buffer already has a live request to
+        // append to (the tap reads `self.request` under the lock).
+        transcriptLock.lock()
+        transcript = ""
+        committedText = ""
+        currentSegment = ""
+        isStopping = false
+        generation += 1
+        let gen = generation
+        useOnDeviceRecognition = useOnDevice
+        self.recognizer = recognizer
+        self.request = request
+        self.task = nil
+        transcriptLock.unlock()
 
-        // Start the recognition task. The result handler may fire on a background
-        // queue; transcript mutation is lock-guarded and UI callbacks hop to main.
-        let task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
+        // ONE tap for the entire session. It appends to whichever request is
+        // current (start's or a restart's) under a tiny lock, and computes the RMS
+        // level OUTSIDE the lock so the realtime audio thread is never blocked on
+        // math. The request is swapped by `restart()`, never the engine or the tap.
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
             guard let self = self else { return }
-            guard let result = result else { return }
-            let text = result.bestTranscription.formattedString
-            self.setTranscript(text)
-            DispatchQueue.main.async {
-                self.onPartialText?(text)
+            self.transcriptLock.lock()
+            self.request?.append(buffer)
+            self.transcriptLock.unlock()
+            let level = SpeechTranscriber.normalizedRMSLevel(from: buffer)
+            DispatchQueue.main.async { [weak self] in
+                self?.onLevel?(level)
             }
         }
 
         // Start the engine; on failure, fully unwind so we never leave a half-open
-        // session behind.
+        // session behind. The task is attached only AFTER a successful start (below),
+        // so a failed start can never spawn a callback — or a restart.
         audioEngine.prepare()
         do {
             try audioEngine.start()
         } catch {
             inputNode.removeTap(onBus: 0)
-            task.cancel()
+            transcriptLock.lock()
+            isStopping = true
+            generation += 1
+            self.request = nil
+            self.recognizer = nil
+            transcriptLock.unlock()
             request.endAudio()
             throw TranscriberError.engineStartFailed
         }
 
-        self.recognizer = recognizer
-        self.request = request
+        // Engine is live: attach the recognition task. The result handler may fire
+        // on a background queue; all state mutation is lock-guarded and the UI
+        // callback hops to main.
+        let task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            self?.handleResult(result, error: error, generation: gen)
+        }
+        transcriptLock.lock()
         self.task = task
+        transcriptLock.unlock()
+
         isRunning = true
     }
 
-    /// Stops audio capture and recognition, returning the best transcript captured
-    /// so far. Safe to call when not running (returns the last transcript).
+    /// Handles one recognition callback. Runs on a background queue. Stale-task and
+    /// post-stop callbacks are filtered by `generation` / `isStopping`.
+    private func handleResult(_ result: SFSpeechRecognitionResult?,
+                              error: Error?,
+                              generation taskGeneration: Int) {
+        transcriptLock.lock()
+
+        // Ignore callbacks from a retired task or after stop() has begun.
+        guard taskGeneration == generation, !isStopping else {
+            transcriptLock.unlock()
+            return
+        }
+
+        if let result = result {
+            let p = result.bestTranscription.formattedString
+
+            // Detect Apple's silent mid-session endpoint reset: the live hypothesis
+            // jumps backward to a fresh, much shorter string that does NOT extend the
+            // current one. Commit the prior segment so it is not overwritten. A
+            // normal in-place revision ("I scream" -> "ice cream") keeps a long
+            // shared prefix and does NOT count as a reset.
+            if !currentSegment.isEmpty,
+               SpeechTranscriber.isBackwardReset(from: currentSegment, to: p) {
+                committedText = composedLocked()
+            }
+            currentSegment = p
+
+            // `isFinal` does not fire per-utterance for a streaming request, so when
+            // it DOES arrive mid-session it means the recognizer hit its cap (the
+            // on-device limit can finalize this way INSTEAD of erroring). Commit and
+            // restart below — otherwise capture would silently freeze until Fn-up and
+            // everything spoken after the cap would be lost.
+            let didFinalize = result.isFinal
+            if didFinalize {
+                committedText = composedLocked()
+                currentSegment = ""
+            }
+
+            let composed = composedLocked()
+            transcript = composed
+            transcriptLock.unlock()
+
+            DispatchQueue.main.async { [weak self] in
+                self?.onPartialText?(composed)
+            }
+
+            // restart() re-checks `isStopping`/`generation` under the lock, so a
+            // stop() racing here is handled. A benign final delivered by stop()'s or
+            // restart()'s own endAudio carries a retired generation and never reaches
+            // this branch (filtered by the guard at the top of handleResult).
+            if didFinalize {
+                restart()
+            }
+            return
+        }
+
+        if error != nil {
+            // Mid-session failure (e.g. the ~1-minute on-device cap). Commit what we
+            // have, then swap in a fresh request + task to keep dictation alive. A
+            // benign cancellation from `stop()` is already filtered above because
+            // `stop()` sets `isStopping` and bumps `generation` first.
+            committedText = composedLocked()
+            currentSegment = ""
+            transcript = committedText
+            transcriptLock.unlock()
+            restart()
+            return
+        }
+
+        transcriptLock.unlock()
+    }
+
+    /// Swaps in a fresh recognition request + task without disturbing the audio
+    /// engine or its tap. No-ops if the session is stopping. Bumping `generation`
+    /// both serializes restarts and invalidates the retired task's late callbacks.
+    private func restart() {
+        transcriptLock.lock()
+        guard !isStopping, let recognizer = self.recognizer else {
+            transcriptLock.unlock()
+            return
+        }
+        generation += 1
+        let gen = generation
+        let oldRequest = self.request
+        let oldTask = self.task
+        let newRequest = SpeechTranscriber.makeRequest(onDevice: useOnDeviceRecognition)
+        // Publish the new request under the lock BEFORE ending the old one, so the
+        // tap never appends to an already-ended request.
+        self.request = newRequest
+        transcriptLock.unlock()
+
+        // Attach the replacement task (tagged with the new generation)...
+        let newTask = recognizer.recognitionTask(with: newRequest) { [weak self] result, error in
+            self?.handleResult(result, error: error, generation: gen)
+        }
+
+        // ...then retire the old request/task now that the replacement is live.
+        oldRequest?.endAudio()
+        oldTask?.cancel()
+
+        transcriptLock.lock()
+        if isStopping || gen != generation {
+            // A racing stop()/restart() superseded us; drop this task cleanly.
+            transcriptLock.unlock()
+            newTask.cancel()
+            return
+        }
+        self.task = newTask
+        transcriptLock.unlock()
+    }
+
+    /// Stops audio capture and recognition, returning the full composed transcript
+    /// captured so far. Safe to call when not running (returns the last transcript).
     @discardableResult
     func stop() -> String {
         guard isRunning else {
             return currentTranscript()
         }
         isRunning = false
+
+        // Set the stop gate FIRST and invalidate the current generation so any
+        // in-flight `restart()` no-ops and late callbacks are ignored.
+        transcriptLock.lock()
+        isStopping = true
+        generation += 1
+        let request = self.request
+        let task = self.task
+        transcriptLock.unlock()
 
         // Stop the engine FIRST so the audio render thread halts and no further
         // buffers are delivered to the tap; only then is it safe to end the request.
@@ -188,19 +350,60 @@ final class SpeechTranscriber {
         // Cancel to suppress late callbacks; we already hold the best partial.
         task?.cancel()
 
-        task = nil
-        request = nil
-        recognizer = nil
+        transcriptLock.lock()
+        self.task = nil
+        self.request = nil
+        self.recognizer = nil
+        transcriptLock.unlock()
 
         return currentTranscript()
     }
 
-    // MARK: Transcript access (thread-safe)
+    // MARK: Transcript composition (thread-safe)
 
-    private func setTranscript(_ value: String) {
-        transcriptLock.lock()
-        transcript = value
-        transcriptLock.unlock()
+    /// Builds a fresh streaming request with this app's fixed configuration. Shared
+    /// by `start()` and `restart()` so a restarted request matches the original.
+    private static func makeRequest(onDevice: Bool) -> SFSpeechAudioBufferRecognitionRequest {
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        if onDevice {
+            request.requiresOnDeviceRecognition = true
+        }
+        return request
+    }
+
+    /// Composes the full live transcript: committed segments + the in-flight one,
+    /// joined by a single space ONLY between two ASCII word characters (so zh-CN and
+    /// punctuation boundaries get no space, and an empty prefix yields no leading
+    /// separator). The caller MUST hold `transcriptLock`.
+    private func composedLocked() -> String {
+        if committedText.isEmpty { return currentSegment }
+        if currentSegment.isEmpty { return committedText }
+        let separator: String
+        if let last = committedText.last, let first = currentSegment.first,
+           SpeechTranscriber.isASCIIWordChar(last), SpeechTranscriber.isASCIIWordChar(first) {
+            separator = " "
+        } else {
+            separator = ""
+        }
+        return committedText + separator + currentSegment
+    }
+
+    /// True for ASCII letters, digits, and underscore — the boundary characters
+    /// that need a separating space between two committed English segments.
+    private static func isASCIIWordChar(_ c: Character) -> Bool {
+        return c.isASCII && (c.isLetter || c.isNumber || c == "_")
+    }
+
+    /// Heuristic for Apple's silent endpoint reset: the new hypothesis `p` is
+    /// shorter than the current segment AND does not share a long common prefix with
+    /// it. A normal revision keeps most of its prefix, so we require the shared
+    /// prefix to cover less than half of `p` to count as a reset. (An empty `p`
+    /// shares a 0-length prefix with a 0 threshold and is therefore NOT a reset.)
+    private static func isBackwardReset(from current: String, to p: String) -> Bool {
+        guard p.count < current.count else { return false }
+        let shared = current.commonPrefix(with: p).count
+        return Double(shared) < 0.5 * Double(p.count)
     }
 
     private func currentTranscript() -> String {
