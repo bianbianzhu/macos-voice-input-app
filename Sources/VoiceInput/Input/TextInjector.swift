@@ -103,6 +103,22 @@ enum TextInjector {
         //      to let it actually take effect first; the restore timers are measured
         //      from the paste, not from here.
         let pasteAndScheduleRestores = {
+            // Re-verify the 8.7 guards immediately before Cmd+V. On the CJK path the paste
+            // is deferred ~60ms for the input-source switch to settle, and the synthetic
+            // Cmd+V lands in whatever app is frontmost at post time — so focus could have
+            // moved to another app or a secure (password) field during that window. If it
+            // has, abort WITHOUT pasting, restoring the input source we already switched so
+            // the user is not left stuck in ASCII. (The clipboard has not been touched yet,
+            // so nothing else needs restoring.)
+            guard let frontmostNow = NSWorkspace.shared.frontmostApplication,
+                  frontmostNow.processIdentifier == expected.appPID,
+                  !isFocusedFieldSecure(appPID: expected.appPID) else {
+                if didSwitchInputSource {
+                    restoreInputSource(previousInputSource)
+                }
+                return
+            }
+
             // Stage the text, marked transient + concealed so managers skip it.
             writeConcealedText(text)
             // Synthesize Cmd+V into the focused field.
