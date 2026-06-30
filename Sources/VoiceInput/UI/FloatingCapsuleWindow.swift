@@ -51,6 +51,30 @@ final class FloatingCapsuleWindow: NSPanel {
     /// against a stable anchor even if the mouse later moves to another display.
     private var anchorScreenFrame: NSRect = .zero
 
+    /// Pending auto-dismiss for a transient `showStatus` message. Held so a new
+    /// dictation cycle (`showListening`) or an explicit `dismiss` can cancel it and
+    /// a stale scheduled dismissal can never clobber the next cycle (same defensive
+    /// pattern as `TextInjector`'s cancellable pending restores).
+    private var pendingStatusDismiss: DispatchWorkItem?
+
+    // MARK: Status kinds
+
+    /// Distinguishes a corrective error notice from a neutral informational one,
+    /// purely so the label can carry the right leading glyph. The glyphs use the
+    /// text-presentation variation selector (U+FE0E) to stay monochrome and match
+    /// the menu's existing `⚠︎` rather than rendering as a color emoji.
+    enum StatusKind {
+        case error
+        case info
+
+        var glyph: String {
+            switch self {
+            case .error: return "\u{26A0}\u{FE0E}" // ⚠︎
+            case .info: return "\u{2139}\u{FE0E}"  // ℹ︎
+            }
+        }
+    }
+
     // MARK: Init
 
     init() {
@@ -80,6 +104,10 @@ final class FloatingCapsuleWindow: NSPanel {
     /// spring animation. Resets text to empty and the status to the listening copy
     /// for `language` (the locale being transcribed).
     func showListening(language: String) {
+        // A new cycle supersedes any pending status auto-dismiss from the prior one.
+        pendingStatusDismiss?.cancel()
+        pendingStatusDismiss = nil
+
         placeholder = L10n.listening(language)
         currentText = ""
 
@@ -142,9 +170,38 @@ final class FloatingCapsuleWindow: NSPanel {
         animateFrame(to: targetFrame(forContentWidth: contentWidth(for: display)))
     }
 
+    /// Show a brief, terminal status/error in the ALREADY-VISIBLE capsule: stop the
+    /// waveform, swap to a glyph-prefixed message, then auto-dismiss after `seconds`.
+    /// Precondition: the capsule is on-screen at both call sites (recording-start
+    /// failure and LLM fallback), so no entry/re-entry animation is needed here.
+    ///
+    /// The pending dismissal is cancellable so a new dictation cycle (`showListening`)
+    /// or an explicit `dismiss` can supersede it without a stale timer double-dismissing.
+    /// Privacy: `message` is always static localized copy — never a transcript, key,
+    /// URL, app name, or `error.localizedDescription`.
+    func showStatus(_ message: String, kind: StatusKind, autoDismissAfter seconds: TimeInterval) {
+        pendingStatusDismiss?.cancel()
+        waveform.stopAnimating()
+
+        let display = "\(kind.glyph) \(message)"
+        placeholder = display
+        currentText = ""
+        label.stringValue = display
+        animateFrame(to: targetFrame(forContentWidth: contentWidth(for: display)))
+
+        let work = DispatchWorkItem { [weak self] in self?.dismiss(completion: nil) }
+        pendingStatusDismiss = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
     /// Exit scale + fade animation, then `orderOut`. Invokes `completion` on the
     /// main thread once the panel is fully hidden and reset for reuse.
     func dismiss(completion: (() -> Void)?) {
+        // An explicit dismiss owns the teardown; drop any pending status auto-dismiss
+        // so it can't fire a second time against a freshly reused capsule.
+        pendingStatusDismiss?.cancel()
+        pendingStatusDismiss = nil
+
         anchorContentLayerToCenter()
         let layer = contentView?.layer
 

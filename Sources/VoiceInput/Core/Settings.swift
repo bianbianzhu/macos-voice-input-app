@@ -112,4 +112,43 @@ enum L10n {
         if lang.hasPrefix("ko") { return "다듬는 중…" }
         return "Refining…"
     }
+
+    // Brief, secret-free status/error lines shown in the capsule when a cycle fails.
+    // Kept short so they fit the capsule's 160–560pt text band after the glyph prefix.
+
+    /// Microphone permission is missing, so recording can't begin.
+    static func micAccessNeeded(_ lang: String) -> String {
+        if lang.hasPrefix("zh-TW") || lang.hasPrefix("zh-Hant") { return "需要麥克風權限" }
+        if lang.hasPrefix("zh") { return "需要麦克风权限" }
+        if lang.hasPrefix("ja") { return "マイクのアクセスが必要です" }
+        if lang.hasPrefix("ko") { return "마이크 권한이 필요합니다" }
+        return "Microphone access needed"
+    }
+
+    /// No speech recognizer is available for the requested locale.
+    static func speechUnavailable(_ lang: String) -> String {
+        if lang.hasPrefix("zh-TW") || lang.hasPrefix("zh-Hant") { return "無法使用語音辨識" }
+        if lang.hasPrefix("zh") { return "无法使用语音识别" }
+        if lang.hasPrefix("ja") { return "音声認識を利用できません" }
+        if lang.hasPrefix("ko") { return "음성 인식을 사용할 수 없습니다" }
+        return "Speech recognition unavailable"
+    }
+
+    /// Generic catch-all when recording couldn't start (audio/engine failure).
+    static func cannotStart(_ lang: String) -> String {
+        if lang.hasPrefix("zh-TW") || lang.hasPrefix("zh-Hant") { return "無法開始錄音" }
+        if lang.hasPrefix("zh") { return "无法开始录音" }
+        if lang.hasPrefix("ja") { return "録音を開始できません" }
+        if lang.hasPrefix("ko") { return "녹음을 시작할 수 없습니다" }
+        return "Couldn't start recording"
+    }
+
+    /// LLM refinement failed/was discarded; the raw transcript was inserted instead.
+    static func refineFellBack(_ lang: String) -> String {
+        if lang.hasPrefix("zh-TW") || lang.hasPrefix("zh-Hant") { return "無法優化 · 已插入原始文字" }
+        if lang.hasPrefix("zh") { return "无法优化 · 已插入原始文本" }
+        if lang.hasPrefix("ja") { return "整形できません · 元のテキストを挿入" }
+        if lang.hasPrefix("ko") { return "다듬기 불가 · 원본 텍스트 삽입" }
+        return "Refinement unavailable · inserted raw text"
+    }
 }

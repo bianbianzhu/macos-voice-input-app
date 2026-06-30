@@ -16,6 +16,36 @@ enum LLMError: Error {
     case emptyResponse
 }
 
+/// Result of `LLMRefiner.refine(_:)`. Distinguishes a genuine refinement from the
+/// conservative fall-back to the original transcript, so the caller can surface a
+/// brief "inserted raw text" notice ONLY when refinement was actually expected and
+/// then failed. Both cases carry the text to inject; neither carries any error
+/// detail (privacy: the capsule notice is static copy, never the failure reason).
+enum RefineOutcome {
+    /// The text the model produced, or the original when refinement was not even
+    /// attempted (empty / not configured / no key — these are gated upstream and
+    /// are NOT user-facing failures, so they must stay silent).
+    case refined(String)
+    /// Refinement was attempted but failed or was discarded, so the ORIGINAL
+    /// transcript is being returned. The caller should inject it and inform the user.
+    case fellBack(String)
+
+    /// The text to inject, regardless of outcome.
+    var text: String {
+        switch self {
+        case .refined(let value), .fellBack(let value): return value
+        }
+    }
+
+    /// Whether the result is the raw transcript after a failed/discarded refinement.
+    var fellBack: Bool {
+        switch self {
+        case .refined: return false
+        case .fellBack: return true
+        }
+    }
+}
+
 /// Refines speech-to-text output via an OpenAI-compatible `/chat/completions`
 /// endpoint. The design is intentionally conservative: any failure path returns
 /// the ORIGINAL transcript unchanged so a flaky network or a chatty model can
@@ -128,15 +158,18 @@ final class LLMRefiner {
     // MARK: - Public API
 
     /// Refines `text`, returning the original on ANY failure or implausible result.
-    func refine(_ text: String) async -> String {
-        // Nothing meaningful to refine.
+    /// The `RefineOutcome` lets the caller tell a real refinement apart from a
+    /// fall-back so it can surface a brief notice; the text itself is unchanged.
+    func refine(_ text: String) async -> RefineOutcome {
+        // Nothing meaningful to refine. Not an attempt, so stay silent.
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return text
+            return .refined(text)
         }
-        guard LLMRefiner.isConfigured() else { return text }
+        // Not configured / no key: gated upstream and not user-facing failures.
+        guard LLMRefiner.isConfigured() else { return .refined(text) }
         guard let apiKey = KeychainStore.readAPIKey(),
               !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return text
+            return .refined(text)
         }
 
         let config = LLMConfig(
@@ -153,16 +186,17 @@ final class LLMRefiner {
 
         switch result {
         case .failure:
-            // Conservative: never surface an error to the user's text stream.
-            return text
+            // Conservative: never surface an error to the user's text stream, but
+            // signal the fall-back so the caller can show an informational notice.
+            return .fellBack(text)
         case .success(let refined):
             // Length sanity: a sane correction is roughly the same length. If the
             // model expanded the text dramatically it likely added commentary or
             // hallucinated, so discard it. No charset filtering (this is CJK-first).
             if refined.count > max(40, text.count * 3) {
-                return text
+                return .fellBack(text)
             }
-            return refined
+            return .refined(refined)
         }
     }
 

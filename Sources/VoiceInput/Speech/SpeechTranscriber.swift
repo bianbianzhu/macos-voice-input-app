@@ -75,7 +75,10 @@ final class SpeechTranscriber {
     /// rebuilds its request with the same setting.
     private var useOnDeviceRecognition: Bool = false
 
-    private enum TranscriberError: Error {
+    /// Why `start(...)` could not begin a session. Exposed (not `private`) so
+    /// `AppCoordinator` can map each case to a generic, secret-free capsule notice;
+    /// the cases themselves carry no payload, so nothing sensitive can leak.
+    enum TranscriberError: Error {
         case microphoneAccessDenied
         case recognizerUnavailable
         case audioInputUnavailable

@@ -34,6 +34,11 @@ final class AppCoordinator {
     /// treated as a plain tap and ignored (no capsule, no microphone).
     private static let minimumHold: TimeInterval = 0.4
 
+    /// How long a transient status/error notice stays in the capsule before it
+    /// auto-dismisses. Long enough to read a short line, short enough to stay out
+    /// of the way.
+    private static let statusDuration: TimeInterval = 2.0
+
     private let transcriber = SpeechTranscriber()
     private let capsule = FloatingCapsuleWindow()
     private let refiner = LLMRefiner()
@@ -117,12 +122,30 @@ final class AppCoordinator {
             SoundCue.play(.start)
         } catch {
             // The engine/recognizer could not start. Reset state SYNCHRONOUSLY so a
-            // concurrent Fn-up during the 0.22s exit animation is ignored (avoids a
-            // double dismiss), then animate the capsule away.
+            // concurrent Fn-up during the exit animation is ignored (avoids a double
+            // dismiss), then — instead of vanishing silently — surface a brief,
+            // generic reason in the capsule and let it auto-dismiss.
             tearDownCallbacks()
             injectionContext = nil
             state = .idle
-            capsule.dismiss(completion: nil)
+            capsule.showStatus(AppCoordinator.startErrorMessage(error, language: pendingLanguage),
+                               kind: .error,
+                               autoDismissAfter: AppCoordinator.statusDuration)
+        }
+    }
+
+    /// Maps a `start(...)` failure to a short, generic, secret-free capsule notice.
+    /// Only the few distinguishable causes get tailored copy; everything else (and
+    /// any non-`TranscriberError`) collapses to a neutral "couldn't start" so we
+    /// never echo `error.localizedDescription` or any other detail.
+    private static func startErrorMessage(_ error: Error, language: String) -> String {
+        switch error as? SpeechTranscriber.TranscriberError {
+        case .microphoneAccessDenied:
+            return L10n.micAccessNeeded(language)
+        case .recognizerUnavailable:
+            return L10n.speechUnavailable(language)
+        case .audioInputUnavailable, .engineStartFailed, .none:
+            return L10n.cannotStart(language)
         }
     }
 
@@ -146,9 +169,9 @@ final class AppCoordinator {
             // and is conservative: on any failure it returns `raw` unchanged.
             let refiner = self.refiner
             Task { [weak self] in
-                let refined = await refiner.refine(raw)
+                let outcome = await refiner.refine(raw)
                 await MainActor.run { [weak self] in
-                    self?.finish(refined)
+                    self?.finish(outcome.text, refineFellBack: outcome.fellBack)
                 }
             }
         } else {
@@ -158,31 +181,54 @@ final class AppCoordinator {
 
     /// Dismiss the capsule and, once it is gone, inject the text into the field
     /// that was focused when recording began. Resolves the machine back to `.idle`.
-    private func finish(_ text: String) {
+    ///
+    /// `refineFellBack` is `true` when LLM refinement was attempted but the RAW
+    /// transcript is being injected instead. On that path we inject WHILE the capsule
+    /// is still visible and then swap it to an informational notice, so the user
+    /// learns the text was inserted unrefined. Injecting before dismissal is safe:
+    /// the capsule is a non-activating panel that ignores mouse events and never
+    /// becomes key/main, so the target app keeps focus and `TextInjector` still
+    /// re-verifies the frontmost PID + secure-field before pasting.
+    private func finish(_ text: String, refineFellBack: Bool = false) {
         let context = injectionContext
         injectionContext = nil
 
         let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         guard !isEmpty, let context = context else {
+            // Nothing to inject (empty/cancelled): plain dismiss, no notice.
             capsule.dismiss { [weak self] in
                 self?.state = .idle
             }
             return
         }
 
-        capsule.dismiss { [weak self] in
-            self?.state = .idle
-            // About to ATTEMPT insertion — optional "done" cue (no-op unless
-            // enabled). Played only on this path, so an empty/cancelled cycle stays
-            // silent. TextInjector may still refuse the paste (focus moved / secure
-            // field), so this signals an attempt, not confirmed insertion.
-            SoundCue.play(.done)
-            // TextInjector re-verifies the frontmost app against `context` and
-            // refuses to type into secure fields; it owns all paste/clipboard
-            // handling and never logs the text.
-            TextInjector.inject(text, expected: context)
+        guard refineFellBack else {
+            // Normal path (LLM off, or refinement succeeded): dismiss first, then
+            // inject once the capsule is gone — unchanged behavior.
+            capsule.dismiss { [weak self] in
+                self?.state = .idle
+                // About to ATTEMPT insertion — optional "done" cue (no-op unless
+                // enabled). Played only on this path, so an empty/cancelled cycle
+                // stays silent. TextInjector may still refuse the paste (focus moved
+                // / secure field), so this signals an attempt, not confirmed insertion.
+                SoundCue.play(.done)
+                // TextInjector re-verifies the frontmost app against `context` and
+                // refuses to type into secure fields; it owns all paste/clipboard
+                // handling and never logs the text.
+                TextInjector.inject(text, expected: context)
+            }
+            return
         }
+
+        // Fallback path: inject the raw text while the capsule is still on-screen,
+        // then replace it with a brief informational notice that auto-dismisses.
+        state = .idle
+        SoundCue.play(.done)
+        TextInjector.inject(text, expected: context)
+        capsule.showStatus(L10n.refineFellBack(pendingLanguage),
+                           kind: .info,
+                           autoDismissAfter: AppCoordinator.statusDuration)
     }
 
     /// Resolve the dictation locale: in Auto mode, follow the current input source
