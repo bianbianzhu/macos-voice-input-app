@@ -113,6 +113,8 @@ final class AppCoordinator {
         do {
             try transcriber.start(language: pendingLanguage,
                                   onDevice: Settings.shared.onDeviceRecognition)
+            // Recording is live — optional "listening" cue (no-op unless enabled).
+            SoundCue.play(.start)
         } catch {
             // The engine/recognizer could not start. Reset state SYNCHRONOUSLY so a
             // concurrent Fn-up during the 0.22s exit animation is ignored (avoids a
@@ -129,6 +131,8 @@ final class AppCoordinator {
         cancelHoldTimer()
 
         let raw = transcriber.stop()
+        // Recording has stopped — optional "stopped" cue (no-op unless enabled).
+        SoundCue.play(.stop)
         // Stop forwarding any late audio buffers to the (soon to be hidden) capsule.
         tearDownCallbacks()
 
@@ -169,6 +173,10 @@ final class AppCoordinator {
 
         capsule.dismiss { [weak self] in
             self?.state = .idle
+            // Text is about to be inserted — optional "done" cue (no-op unless
+            // enabled). Played only on this path, so an empty/cancelled cycle stays
+            // silent.
+            SoundCue.play(.done)
             // TextInjector re-verifies the frontmost app against `context` and
             // refuses to type into secure fields; it owns all paste/clipboard
             // handling and never logs the text.

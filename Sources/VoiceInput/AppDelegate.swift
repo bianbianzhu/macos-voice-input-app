@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // menu re-opens (the language submenu is rebuilt fresh; toggles re-checked).
     private var languageMenuItem: NSMenuItem?
     private var onDeviceItem: NSMenuItem?
+    private var soundCuesItem: NSMenuItem?
     private var llmEnableItem: NSMenuItem?
 
     // Reflects whether the Fn monitor is live, and the timer that waits for the
@@ -122,6 +123,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(onDevice)
         onDeviceItem = onDevice
 
+        // Optional audio cues (start / stop / done) toggle.
+        let soundCues = NSMenuItem(title: "Sound Cues",
+                                   action: #selector(toggleSoundCues(_:)),
+                                   keyEquivalent: "")
+        soundCues.target = self
+        soundCues.state = Settings.shared.soundCuesEnabled ? .on : .off
+        menu.addItem(soundCues)
+        soundCuesItem = soundCues
+
         // LLM refinement submenu (Enable toggle + Settings…).
         let llmItem = NSMenuItem(title: "LLM Refinement", action: nil, keyEquivalent: "")
         let llmMenu = NSMenu()
@@ -211,6 +221,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleOnDevice(_ sender: NSMenuItem) {
         let newValue = !Settings.shared.onDeviceRecognition
         Settings.shared.onDeviceRecognition = newValue
+        sender.state = newValue ? .on : .off
+    }
+
+    @objc private func toggleSoundCues(_ sender: NSMenuItem) {
+        let newValue = !Settings.shared.soundCuesEnabled
+        Settings.shared.soundCuesEnabled = newValue
         sender.state = newValue ? .on : .off
     }
 
@@ -313,6 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Dock menu) is reflected here.
         languageMenuItem?.submenu = makeLanguageMenu()
         onDeviceItem?.state = Settings.shared.onDeviceRecognition ? .on : .off
+        soundCuesItem?.state = Settings.shared.soundCuesEnabled ? .on : .off
         llmEnableItem?.state = Settings.shared.llmEnabled ? .on : .off
     }
 

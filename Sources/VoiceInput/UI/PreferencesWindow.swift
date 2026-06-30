@@ -15,6 +15,7 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
 
     private var languagePopUp: NSPopUpButton!
     private var onDeviceCheckbox: NSButton!
+    private var soundCuesCheckbox: NSButton!
     private var llmEnabledCheckbox: NSButton!
 
     private init() {
@@ -41,7 +42,7 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
         built = true
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 230),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 300),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -76,6 +77,12 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
                                     target: self, action: #selector(onDeviceToggled))
         onDeviceCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
+        soundCuesCheckbox = NSButton(checkboxWithTitle: "Play sound cues (start · stop · done)",
+                                     target: self, action: #selector(soundCuesToggled))
+        soundCuesCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
+        let soundCuesHint = makeHint("Subtle system sounds when recording starts, stops, and text is inserted — eyes-free feedback. Off by default.")
+
         llmEnabledCheckbox = NSButton(checkboxWithTitle: "Enable LLM refinement",
                                       target: self, action: #selector(llmToggled))
         llmEnabledCheckbox.translatesAutoresizingMaskIntoConstraints = false
@@ -85,7 +92,8 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
         llmSettingsButton.translatesAutoresizingMaskIntoConstraints = false
 
         for view in [languageLabel, languagePopUp!, languageHint,
-                     onDeviceCheckbox!, llmEnabledCheckbox!, llmSettingsButton] {
+                     onDeviceCheckbox!, soundCuesCheckbox!, soundCuesHint,
+                     llmEnabledCheckbox!, llmSettingsButton] {
             content.addSubview(view)
         }
 
@@ -105,8 +113,15 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
             onDeviceCheckbox.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             onDeviceCheckbox.topAnchor.constraint(equalTo: languageHint.bottomAnchor, constant: 18),
 
+            soundCuesCheckbox.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            soundCuesCheckbox.topAnchor.constraint(equalTo: onDeviceCheckbox.bottomAnchor, constant: 14),
+
+            soundCuesHint.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            soundCuesHint.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            soundCuesHint.topAnchor.constraint(equalTo: soundCuesCheckbox.bottomAnchor, constant: 6),
+
             llmEnabledCheckbox.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            llmEnabledCheckbox.topAnchor.constraint(equalTo: onDeviceCheckbox.bottomAnchor, constant: 14),
+            llmEnabledCheckbox.topAnchor.constraint(equalTo: soundCuesHint.bottomAnchor, constant: 16),
 
             llmSettingsButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             llmSettingsButton.topAnchor.constraint(equalTo: llmEnabledCheckbox.bottomAnchor, constant: 14),
@@ -114,7 +129,7 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
         ])
 
         window.contentView = content
-        window.setContentSize(NSSize(width: 440, height: 230))
+        window.setContentSize(NSSize(width: 440, height: 300))
         window.center()
         self.window = window
     }
@@ -145,6 +160,7 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
             selectLanguageItem(matching: Settings.shared.recognitionLanguage)
         }
         onDeviceCheckbox.state = Settings.shared.onDeviceRecognition ? .on : .off
+        soundCuesCheckbox.state = Settings.shared.soundCuesEnabled ? .on : .off
         llmEnabledCheckbox.state = Settings.shared.llmEnabled ? .on : .off
     }
 
@@ -169,6 +185,10 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func onDeviceToggled() {
         Settings.shared.onDeviceRecognition = (onDeviceCheckbox.state == .on)
+    }
+
+    @objc private func soundCuesToggled() {
+        Settings.shared.soundCuesEnabled = (soundCuesCheckbox.state == .on)
     }
 
     @objc private func llmToggled() {

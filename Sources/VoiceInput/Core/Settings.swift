@@ -17,6 +17,7 @@ final class Settings {
         static let llmEnabled = "llmEnabled"
         static let llmBaseURL = "llmBaseURL"
         static let llmModel = "llmModel"
+        static let soundCuesEnabled = "soundCuesEnabled"
     }
 
     private init() {
@@ -30,7 +31,8 @@ final class Settings {
             Key.onDeviceRecognition: true,
             Key.llmEnabled: false,
             Key.llmBaseURL: "",
-            Key.llmModel: ""
+            Key.llmModel: "",
+            Key.soundCuesEnabled: false
         ])
     }
 
@@ -70,6 +72,13 @@ final class Settings {
     var llmModel: String {
         get { defaults.string(forKey: Key.llmModel) ?? "" }
         set { defaults.set(newValue, forKey: Key.llmModel) }
+    }
+
+    /// Optional audio cues (start / stop / done) for eyes-free feedback. Off by
+    /// default so the app stays silent unless the user opts in. See `SoundCue`.
+    var soundCuesEnabled: Bool {
+        get { defaults.bool(forKey: Key.soundCuesEnabled) }
+        set { defaults.set(newValue, forKey: Key.soundCuesEnabled) }
     }
 
     /// Languages offered in the menu. `code` is a BCP-47 identifier suitable for
