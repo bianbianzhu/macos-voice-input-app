@@ -150,7 +150,8 @@ means the tap is live; `⚠︎ Waiting for Accessibility permission…` means it
    on-device recognition, or configure LLM refinement.
 2. Focus any text field, **hold `Fn`** (briefly past ~400 ms), speak, and **release**. The capsule
    shows your words live; if LLM refinement is on it briefly shows *Refining…* before the cleaned
-   text is pasted.
+   text is pasted, then — only when refinement actually changed something — flashes a brief
+   **✨** confirmation of the result.
 
 ## Project layout
 
