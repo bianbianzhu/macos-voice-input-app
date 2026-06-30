@@ -1,8 +1,8 @@
 import AppKit
 
 /// Optional, non-blocking audio cues for the three moments of a dictation cycle —
-/// recording started, recording stopped, and text inserted — so the user gets
-/// "eyes-free" feedback without watching the floating capsule.
+/// recording started, recording stopped, and an insertion attempt — so the user
+/// gets "eyes-free" feedback without watching the floating capsule.
 ///
 /// Gated behind `Settings.soundCuesEnabled` and OFF by default: when the toggle is
 /// off, `play(_:)` is a silent no-op, so the app stays quiet unless the user opts
@@ -17,7 +17,7 @@ enum SoundCue {
     enum Event {
         case start    // recording began
         case stop     // recording ended (Fn released)
-        case done     // text was inserted into the focused field
+        case done     // about to attempt insertion (paste may still be refused)
 
         /// Name of a stock macOS system sound. These ship with every macOS
         /// install, so `NSSound(named:)` resolves them without any bundled asset.
@@ -25,7 +25,7 @@ enum SoundCue {
             switch self {
             case .start: return NSSound.Name("Tink")   // light tick — "listening"
             case .stop:  return NSSound.Name("Pop")    // soft pop  — "stopped"
-            case .done:  return NSSound.Name("Glass")  // gentle chime — "inserted"
+            case .done:  return NSSound.Name("Glass")  // gentle chime — "inserting"
             }
         }
     }

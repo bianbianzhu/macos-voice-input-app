@@ -173,9 +173,10 @@ final class AppCoordinator {
 
         capsule.dismiss { [weak self] in
             self?.state = .idle
-            // Text is about to be inserted — optional "done" cue (no-op unless
+            // About to ATTEMPT insertion — optional "done" cue (no-op unless
             // enabled). Played only on this path, so an empty/cancelled cycle stays
-            // silent.
+            // silent. TextInjector may still refuse the paste (focus moved / secure
+            // field), so this signals an attempt, not confirmed insertion.
             SoundCue.play(.done)
             // TextInjector re-verifies the frontmost app against `context` and
             // refuses to type into secure fields; it owns all paste/clipboard
