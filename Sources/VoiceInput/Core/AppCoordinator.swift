@@ -39,6 +39,11 @@ final class AppCoordinator {
     /// of the way.
     private static let statusDuration: TimeInterval = 2.0
 
+    /// How long the "✨ refined" confirmation stays in the capsule before it
+    /// auto-dismisses. Shorter than `statusDuration`: it appears AFTER the text is
+    /// already inserted, so it's a glance-able confirmation, not copy to read.
+    private static let refinedNoticeDuration: TimeInterval = 1.5
+
     private let transcriber = SpeechTranscriber()
     private let capsule = FloatingCapsuleWindow()
     private let refiner = LLMRefiner()
@@ -170,8 +175,16 @@ final class AppCoordinator {
             let refiner = self.refiner
             Task { [weak self] in
                 let outcome = await refiner.refine(raw)
+                // "Changed" only when refinement succeeded AND altered the text.
+                // Trimmed compare so a pure leading/trailing-whitespace diff is not
+                // treated as a change (internal text/punctuation diffs still count).
+                let changed = !outcome.fellBack &&
+                    outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        != raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 await MainActor.run { [weak self] in
-                    self?.finish(outcome.text, refineFellBack: outcome.fellBack)
+                    self?.finish(outcome.text,
+                                 refineFellBack: outcome.fellBack,
+                                 refineChanged: changed)
                 }
             }
         } else {
@@ -179,17 +192,24 @@ final class AppCoordinator {
         }
     }
 
-    /// Dismiss the capsule and, once it is gone, inject the text into the field
-    /// that was focused when recording began. Resolves the machine back to `.idle`.
+    /// Inject the text into the field that was focused when recording began and
+    /// resolve the machine back to `.idle`.
     ///
-    /// `refineFellBack` is `true` when LLM refinement was attempted but the RAW
-    /// transcript is being injected instead. On that path we inject WHILE the capsule
-    /// is still visible and then swap it to an informational notice, so the user
-    /// learns the text was inserted unrefined. Injecting before dismissal is safe:
-    /// the capsule is a non-activating panel that ignores mouse events and never
-    /// becomes key/main, so the target app keeps focus and `TextInjector` still
-    /// re-verifies the frontmost PID + secure-field before pasting.
-    private func finish(_ text: String, refineFellBack: Bool = false) {
+    /// Two presentation beats:
+    /// - **Normal** (LLM off, or refinement succeeded without changing the text):
+    ///   dismiss the capsule first, then inject once it is gone — the original beat.
+    /// - **Keep-visible** (`refineFellBack` OR `refineChanged`): inject WHILE the
+    ///   capsule is on-screen, then swap it to a brief auto-dismissing status — an
+    ///   informational `ℹ︎` notice when the RAW text was inserted unrefined, or a
+    ///   `✨` confirmation when refinement actually changed the text. The two flags
+    ///   are mutually exclusive (`refineChanged` requires refinement to have
+    ///   succeeded). Injecting before dismissal is safe: the capsule is a
+    ///   non-activating panel that ignores mouse events and never becomes key/main,
+    ///   so the target app keeps focus and `TextInjector` still re-verifies the
+    ///   frontmost PID + secure-field before pasting.
+    private func finish(_ text: String,
+                        refineFellBack: Bool = false,
+                        refineChanged: Bool = false) {
         let context = injectionContext
         injectionContext = nil
 
@@ -203,32 +223,40 @@ final class AppCoordinator {
             return
         }
 
-        guard refineFellBack else {
-            // Normal path (LLM off, or refinement succeeded): dismiss first, then
-            // inject once the capsule is gone — unchanged behavior.
-            capsule.dismiss { [weak self] in
-                self?.state = .idle
-                // About to ATTEMPT insertion — optional "done" cue (no-op unless
-                // enabled). Played only on this path, so an empty/cancelled cycle
-                // stays silent. TextInjector may still refuse the paste (focus moved
-                // / secure field), so this signals an attempt, not confirmed insertion.
-                SoundCue.play(.done)
-                // TextInjector re-verifies the frontmost app against `context` and
-                // refuses to type into secure fields; it owns all paste/clipboard
-                // handling and never logs the text.
-                TextInjector.inject(text, expected: context)
+        if refineFellBack || refineChanged {
+            // Keep the capsule on-screen: inject now, then swap the label to a brief
+            // auto-dismissing status. Optional "done" cue (no-op unless enabled);
+            // TextInjector may still refuse the paste (focus moved / secure field),
+            // so this signals an attempt, not confirmed insertion. TextInjector owns
+            // all paste/clipboard handling and never logs the text.
+            state = .idle
+            SoundCue.play(.done)
+            TextInjector.inject(text, expected: context)
+            if refineFellBack {
+                capsule.showStatus(L10n.refineFellBack(pendingLanguage),
+                                   kind: .info,
+                                   autoDismissAfter: AppCoordinator.statusDuration)
+            } else {
+                // Refinement actually changed the text — show it back as confirmation.
+                capsule.showStatus(text,
+                                   kind: .refined,
+                                   autoDismissAfter: AppCoordinator.refinedNoticeDuration)
             }
             return
         }
 
-        // Fallback path: inject the raw text while the capsule is still on-screen,
-        // then replace it with a brief informational notice that auto-dismisses.
-        state = .idle
-        SoundCue.play(.done)
-        TextInjector.inject(text, expected: context)
-        capsule.showStatus(L10n.refineFellBack(pendingLanguage),
-                           kind: .info,
-                           autoDismissAfter: AppCoordinator.statusDuration)
+        // Normal path (LLM off, or refined-but-unchanged): dismiss first, then inject
+        // once the capsule is gone — unchanged behavior.
+        capsule.dismiss { [weak self] in
+            self?.state = .idle
+            // About to ATTEMPT insertion — optional "done" cue (no-op unless enabled).
+            // Played only on this path, so an empty/cancelled cycle stays silent.
+            SoundCue.play(.done)
+            // TextInjector re-verifies the frontmost app against `context` and refuses
+            // to type into secure fields; it owns all paste/clipboard handling and
+            // never logs the text.
+            TextInjector.inject(text, expected: context)
+        }
     }
 
     /// Resolve the dictation locale: in Auto mode, follow the current input source

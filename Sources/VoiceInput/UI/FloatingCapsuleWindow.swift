@@ -68,18 +68,23 @@ final class FloatingCapsuleWindow: NSPanel {
 
     // MARK: Status kinds
 
-    /// Distinguishes a corrective error notice from a neutral informational one,
-    /// purely so the label can carry the right leading glyph. The glyphs use the
-    /// text-presentation variation selector (U+FE0E) to stay monochrome and match
-    /// the menu's existing `⚠︎` rather than rendering as a color emoji.
+    /// Distinguishes a corrective error notice, a neutral informational one, and a
+    /// celebratory "refined" confirmation, purely so the label can carry the right
+    /// leading glyph. The `.error`/`.info` glyphs use the text-presentation variation
+    /// selector (U+FE0E) to stay monochrome and match the menu's existing `⚠︎` rather
+    /// than rendering as a color emoji. The `.refined` sparkle is intentionally left
+    /// in its natural color presentation to read as a positive confirmation (matching
+    /// the reference app's `✨`).
     enum StatusKind {
         case error
         case info
+        case refined
 
         var glyph: String {
             switch self {
             case .error: return "\u{26A0}\u{FE0E}" // ⚠︎
             case .info: return "\u{2139}\u{FE0E}"  // ℹ︎
+            case .refined: return "\u{2728}"       // ✨
             }
         }
     }
@@ -119,6 +124,9 @@ final class FloatingCapsuleWindow: NSPanel {
         pendingStatusDismiss?.cancel()
         pendingStatusDismiss = nil
         presentationGeneration &+= 1
+        // A prior cycle may have left the label tail-truncating (a status line); restore
+        // head-truncation so the live transcript keeps its latest words visible.
+        setTruncationMode(.byTruncatingHead)
 
         placeholder = L10n.listening(language)
         currentText = ""
@@ -182,20 +190,27 @@ final class FloatingCapsuleWindow: NSPanel {
         animateFrame(to: targetFrame(forContentWidth: contentWidth(for: display)))
     }
 
-    /// Show a brief, terminal status/error in the ALREADY-VISIBLE capsule: stop the
-    /// waveform, swap to a glyph-prefixed message, then auto-dismiss after `seconds`.
-    /// Precondition: the capsule is on-screen at both call sites (recording-start
-    /// failure and LLM fallback), so no entry/re-entry animation is needed here.
+    /// Show a brief, terminal status in the ALREADY-VISIBLE capsule: stop the waveform,
+    /// swap to a glyph-prefixed message, then auto-dismiss after `seconds`. Precondition:
+    /// the capsule is on-screen at every call site (recording-start failure, LLM
+    /// fallback, and the post-paste "✨ refined" confirmation), so no entry/re-entry
+    /// animation is needed here. The status line truncates at the TAIL (unlike the live
+    /// transcript) so the leading glyph stays visible even when the message is long.
     ///
     /// The pending dismissal is cancellable so a new dictation cycle (`showListening`)
     /// or an explicit `dismiss` can supersede it without a stale timer double-dismissing.
-    /// Privacy: `message` is always static localized copy — never a transcript, key,
-    /// URL, app name, or `error.localizedDescription`.
+    /// Privacy: `message` is either static localized copy or — on the ✨ path — the
+    /// user's own refined transcript. It is display-only: like the live partials shown
+    /// via `updateText` it is never logged, persisted, or transmitted, and is never a
+    /// key, URL, app name, or `error.localizedDescription`.
     func showStatus(_ message: String, kind: StatusKind, autoDismissAfter seconds: TimeInterval) {
         pendingStatusDismiss?.cancel()
         // This message is now the live presentation; invalidate any in-flight exit.
         presentationGeneration &+= 1
         waveform.stopAnimating()
+        // Keep the leading glyph visible for long messages (the live transcript uses
+        // head-truncation; a status line wants the glyph + start of the text).
+        setTruncationMode(.byTruncatingTail)
 
         let display = "\(kind.glyph) \(message)"
         placeholder = display
@@ -338,6 +353,14 @@ final class FloatingCapsuleWindow: NSPanel {
             label.trailingAnchor.constraint(equalTo: effectView.trailingAnchor, constant: -rightPadding),
             label.centerYAnchor.constraint(equalTo: effectView.centerYAnchor)
         ])
+    }
+
+    /// Set the label's truncation mode on both the field and its cell (an `NSTextField`
+    /// truncates via its cell). Head-truncation keeps the latest words of the live
+    /// transcript; tail-truncation keeps a status line's leading glyph + start.
+    private func setTruncationMode(_ mode: NSLineBreakMode) {
+        label.lineBreakMode = mode
+        label.cell?.lineBreakMode = mode
     }
 
     // MARK: Geometry helpers
