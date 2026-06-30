@@ -57,6 +57,15 @@ final class FloatingCapsuleWindow: NSPanel {
     /// pattern as `TextInjector`'s cancellable pending restores).
     private var pendingStatusDismiss: DispatchWorkItem?
 
+    /// Monotonic token identifying the current capsule presentation. Bumped on every
+    /// new presentation (`showListening`/`showStatus`). A `dismiss` captures it before
+    /// its exit animation and the completion no-ops if a newer presentation has since
+    /// taken over the single, reused window — the same stale-callback guard
+    /// `SpeechTranscriber.generation` uses. Needed because an in-flight
+    /// `NSAnimationContext` completion cannot be cancelled once scheduled, so a status
+    /// notice's 2s auto-dismiss could otherwise hide a capsule a new cycle just showed.
+    private var presentationGeneration: UInt = 0
+
     // MARK: Status kinds
 
     /// Distinguishes a corrective error notice from a neutral informational one,
@@ -104,9 +113,12 @@ final class FloatingCapsuleWindow: NSPanel {
     /// spring animation. Resets text to empty and the status to the listening copy
     /// for `language` (the locale being transcribed).
     func showListening(language: String) {
-        // A new cycle supersedes any pending status auto-dismiss from the prior one.
+        // A new cycle supersedes any pending status auto-dismiss from the prior one,
+        // and bumps the presentation token so a stale in-flight exit completion can't
+        // hide the capsule we're about to show.
         pendingStatusDismiss?.cancel()
         pendingStatusDismiss = nil
+        presentationGeneration &+= 1
 
         placeholder = L10n.listening(language)
         currentText = ""
@@ -181,6 +193,8 @@ final class FloatingCapsuleWindow: NSPanel {
     /// URL, app name, or `error.localizedDescription`.
     func showStatus(_ message: String, kind: StatusKind, autoDismissAfter seconds: TimeInterval) {
         pendingStatusDismiss?.cancel()
+        // This message is now the live presentation; invalidate any in-flight exit.
+        presentationGeneration &+= 1
         waveform.stopAnimating()
 
         let display = "\(kind.glyph) \(message)"
@@ -201,6 +215,10 @@ final class FloatingCapsuleWindow: NSPanel {
         // so it can't fire a second time against a freshly reused capsule.
         pendingStatusDismiss?.cancel()
         pendingStatusDismiss = nil
+
+        // Capture the presentation this dismiss belongs to. If a newer one takes over
+        // the window before the exit animation completes, the stale completion no-ops.
+        let generation = presentationGeneration
 
         anchorContentLayerToCenter()
         let layer = contentView?.layer
@@ -223,6 +241,12 @@ final class FloatingCapsuleWindow: NSPanel {
                 completion?()
                 return
             }
+            // A newer presentation has taken over the (single, reused) window since
+            // this exit animation began: skip the stale teardown ENTIRELY — including
+            // `completion` — so we neither hide/reset the capsule the new cycle just
+            // showed nor run side-effects (e.g. a future `completion` that flips
+            // coordinator state) against it. The new presentation owns visibility now.
+            guard self.presentationGeneration == generation else { return }
             self.waveform.stopAnimating()
             self.orderOut(nil)
             // Reset for the next presentation.

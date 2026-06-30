@@ -143,12 +143,15 @@ enum L10n {
         return "Couldn't start recording"
     }
 
-    /// LLM refinement failed/was discarded; the raw transcript was inserted instead.
+    /// LLM refinement failed/was discarded, so insertion of the RAW transcript was
+    /// attempted. Phrased as "attempted" because `TextInjector.inject` can silently
+    /// decline (focus moved / secure field / CJK re-check abort) and we don't observe
+    /// the outcome, so we must not claim the text definitely landed.
     static func refineFellBack(_ lang: String) -> String {
-        if lang.hasPrefix("zh-TW") || lang.hasPrefix("zh-Hant") { return "無法優化 · 已插入原始文字" }
-        if lang.hasPrefix("zh") { return "无法优化 · 已插入原始文本" }
-        if lang.hasPrefix("ja") { return "整形できません · 元のテキストを挿入" }
-        if lang.hasPrefix("ko") { return "다듬기 불가 · 원본 텍스트 삽입" }
-        return "Refinement unavailable · inserted raw text"
+        if lang.hasPrefix("zh-TW") || lang.hasPrefix("zh-Hant") { return "無法優化 · 已嘗試插入原文" }
+        if lang.hasPrefix("zh") { return "无法优化 · 已尝试插入原文" }
+        if lang.hasPrefix("ja") { return "整えられません · 挿入を試みました" }
+        if lang.hasPrefix("ko") { return "다듬기 불가 · 원문 삽입 시도" }
+        return "Refinement unavailable · attempted to insert raw text"
     }
 }
